@@ -38,7 +38,7 @@ dotnet run -- <input-file> <input-format> <output-format> [--force]
 ## Installation
 - Clone this repo:
 ```
-git clone https://github.com/yourusername/FormatConverter.git
+git clone https://github.com/franciscorosecerna/FormatConverter.git
 cd FormatConverter
 ```
 - Build and run:
