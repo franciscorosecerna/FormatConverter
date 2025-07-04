@@ -31,8 +31,10 @@ dotnet run -- <input-file> <input-format> <output-format> [--force]
 ---
 
 ## Important Notes
-- Use `--force` carefully — it will overwrite files without asking.
-- If the tool crashes, blame the universe 🌌 (or read the error message, as you prefer).
+- This tool currently supports **conversions between JSON and other formats only** (e.g., JSON ⇄ XML, JSON ⇄ YAML, etc.).
+- Direct conversions **between non-JSON formats** (e.g., XML ⇄ YAML, MessagePack ⇄ CBOR) are **not supported**.
+- Use `--force` **carefully** — it will overwrite files without asking.
+- If the tool crashes, blame the universe 🌌 (*or read the error message, maybe*).
 ---
 
 ## Installation
@@ -46,3 +48,5 @@ cd FormatConverter
 dotnet build
 dotnet run
 ```
+---
+Bug reports, and conversion format suggestions are welcome!
