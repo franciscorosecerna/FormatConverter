@@ -1,0 +1,14 @@
+{
+  "persona": {
+    "nombre": "Ana",
+    "edad": 29,
+    "email": "ana@example.com",
+    "direccion": {
+      "calle": "Av. Siempre Viva",
+      "numero": 742,
+      "ciudad": "Springfield"
+    },
+    "telefonos": ["123-4567", "987-6543"],
+    "activo": true
+  }
+}
