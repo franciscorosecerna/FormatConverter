@@ -1,10 +1,12 @@
 ﻿using MessagePack;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using PeterO.Cbor;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Xml.Linq;
 using YamlDotNet.Core;
 using YamlDotNet.Serialization;
@@ -15,7 +17,7 @@ namespace FormatConverter
     {
         public static readonly HashSet<string> SupportedFormats = new(StringComparer.OrdinalIgnoreCase)
         {
-            "json", "yaml", "xml", "messagepack"
+            "json", "yaml", "xml", "messagepack", "cbor"
         };
 
         public static string ConvertFormat(string input, string fromFormat, string toFormat)
@@ -46,6 +48,10 @@ namespace FormatConverter
             {
                 throw new FormatException($"Invalid MessagePack input: {ex.Message}", ex);
             }
+            catch (CBORException ex)
+            {
+                throw new FormatException($"Invalid CBOR input: {ex.Message}", ex);
+            }
             catch (Exception ex)
             {
                 throw new FormatException($"Conversion failed: {ex.Message}", ex);
@@ -60,6 +66,7 @@ namespace FormatConverter
                 "yaml" => YamlToJson(input),
                 "xml" => XmlToJson(input),
                 "messagepack" => MessagePackToJson(input),
+                "cbor" => CborToJson(input),
                 _ => throw new InvalidOperationException("Unreachable code (invalid input format)")
             };
         }
@@ -72,6 +79,7 @@ namespace FormatConverter
                 "yaml" => JsonToYaml(data),
                 "xml" => JsonToXml(data),
                 "messagepack" => JsonToMessagePack(data),
+                "cbor" => JsonToCbor(data),
                 _ => throw new InvalidOperationException("Unreachable code (invalid output format)")
             };
         }
@@ -189,6 +197,42 @@ namespace FormatConverter
             catch (Exception ex)
             {
                 throw new InvalidOperationException($"Failed to serialize JSON to MessagePack: {ex.Message}", ex);
+            }
+        }
+
+        private static JObject CborToJson(string base64Input)
+        {
+            try
+            {
+                byte[] bytes = Convert.FromBase64String(base64Input);
+
+                CBORObject cborObj = CBORObject.DecodeFromBytes(bytes);
+
+                string jsonString = cborObj.ToJSONString();
+
+                return JObject.Parse(jsonString);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to deserialize CBOR to JSON: {ex.Message}", ex);
+            }
+        }
+
+        private static string JsonToCbor(JObject json)
+        {
+            try
+            {
+                var obj = ConvertJTokenToObject(json);
+
+                CBORObject cborObj = CBORObject.FromJSONString(json.ToString());
+
+                byte[] bytes = cborObj.EncodeToBytes();
+
+                return Convert.ToBase64String(bytes);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to serialize JSON to CBOR: {ex.Message}", ex);
             }
         }
     }

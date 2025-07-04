@@ -108,7 +108,7 @@ class Program
     {
         try
         {
-            if (format == "messagepack")
+            if (format == "messagepack" || format == "cbor")
             {
                 byte[] bytes = File.ReadAllBytes(filePath);
                 return Convert.ToBase64String(bytes);
@@ -128,7 +128,7 @@ class Program
     {
         try
         {
-            if (format == "messagepack")
+            if (format == "messagepack" || format == "cbor")
             {
                 byte[] bytes = Convert.FromBase64String(content);
                 File.WriteAllBytes(filePath, bytes);
@@ -161,6 +161,7 @@ class Program
             "xml" => ".xml",
             "yaml" => ".yaml",
             "messagepack" => ".msgpack",
+            "cbor" => ".cbor",
             _ => ".out"
         };
     }
