@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Xml.Linq;
 using YamlDotNet.Core;
 using YamlDotNet.Serialization;
@@ -19,7 +20,7 @@ namespace FormatConverter
     {
         public static readonly HashSet<string> SupportedFormats = new(StringComparer.OrdinalIgnoreCase)
         {
-            "json", "yaml", "xml", "messagepack", "cbor", "protobuf"
+            "json", "yaml", "xml", "messagepack", "cbor", "protobuf", "bxml"
         };
 
         public static string ConvertFormat(string input, string fromFormat, string toFormat)
@@ -74,6 +75,7 @@ namespace FormatConverter
                 "messagepack" => MessagePackToJson(input),
                 "cbor" => CborToJson(input),
                 "protobuf" => ProtobufToJson(input),
+                "bxml" => BxmlToJson(input),
                 _ => throw new InvalidOperationException("Unreachable code (invalid input format)")
             };
         }
@@ -88,6 +90,7 @@ namespace FormatConverter
                 "messagepack" => JsonToMessagePack(data),
                 "cbor" => JsonToCbor(data),
                 "protobuf" => JsonToProtobuf(data),
+                "bxml" => JsonToBxml(data),
                 _ => throw new InvalidOperationException("Unreachable code (invalid output format)")
             };
         }
@@ -320,5 +323,223 @@ namespace FormatConverter
 
             return Value.ForStruct(ConvertJObjectToStruct(obj));
         }
+
+        private static JObject BxmlToJson(string base64Input)
+        {
+            try
+            {
+                byte[] bxmlData = Convert.FromBase64String(base64Input);
+
+                string xmlString = BxmlToXml(bxmlData);
+
+                return XmlToJson(xmlString);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to deserialize BXML to JSON: {ex.Message}", ex);
+            }
+        }
+
+        private static string JsonToBxml(JObject json)
+        {
+            try
+            {
+                string xmlString = JsonToXml(json);
+
+                byte[] bxmlData = XmlToBxml(xmlString);
+
+                return Convert.ToBase64String(bxmlData);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to serialize JSON to BXML: {ex.Message}", ex);
+            }
+        }
+
+        private static string BxmlToXml(byte[] bxmlData)
+        {
+            try
+            {
+                using var buffer = new MemoryStream(bxmlData);
+                using var reader = new BinaryReader(buffer);
+                var signature = reader.ReadBytes(4);
+                if (Encoding.ASCII.GetString(signature) != "BXML")
+                    throw new InvalidOperationException("Invalid BXML signature");
+
+                uint version = reader.ReadUInt32();
+                if (version != 1)
+                    throw new InvalidOperationException($"Unsupported BXML version: {version}");
+
+                uint stringTableOffset = reader.ReadUInt32();
+
+                long currentPos = buffer.Position;
+                buffer.Seek(stringTableOffset, SeekOrigin.Begin);
+
+                uint stringCount = reader.ReadUInt32();
+                var stringTable = new string[stringCount];
+
+                for (int i = 0; i < stringCount; i++)
+                {
+                    uint stringLength = reader.ReadUInt32();
+                    byte[] stringBytes = reader.ReadBytes((int)stringLength);
+                    stringTable[i] = Encoding.UTF8.GetString(stringBytes);
+                }
+
+                buffer.Seek(currentPos, SeekOrigin.Begin);
+
+                XElement root = ReadElement(reader, stringTable);
+
+                var doc = new XDocument(new XDeclaration("1.0", "utf-8", null), root);
+
+                return doc.ToString();
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to convert BXML to XML: {ex.Message}", ex);
+            }
+        }
+
+        private static byte[] XmlToBxml(string xmlString)
+        {
+            try
+            {
+                XDocument doc = XDocument.Parse(xmlString);
+
+                using var buffer = new MemoryStream();
+                using var writer = new BinaryWriter(buffer);
+
+                var stringTable = new Dictionary<string, ushort>();
+                ushort stringCounter = 0;
+
+                ushort AddString(string s)
+                {
+                    if (string.IsNullOrEmpty(s)) s = "";
+                    if (!stringTable.ContainsKey(s))
+                    {
+                        stringTable[s] = stringCounter++;
+                    }
+                    return stringTable[s];
+                }
+
+                writer.Write(Encoding.ASCII.GetBytes("BXML"));
+                writer.Write((uint)1);
+
+                long stringTableOffsetPosition = buffer.Position;
+                writer.Write((uint)0);
+
+                if (doc.Root != null)
+                {
+                    ProcessElement(doc.Root, writer, AddString);
+                }
+
+                long stringTableOffset = buffer.Position;
+                writer.Write((uint)stringTable.Count);
+
+                var sortedStrings = new string[stringTable.Count];
+                foreach (var kvp in stringTable)
+                {
+                    sortedStrings[kvp.Value] = kvp.Key;
+                }
+
+                foreach (var str in sortedStrings)
+                {
+                    byte[] strBytes = Encoding.UTF8.GetBytes(str);
+                    writer.Write((uint)strBytes.Length);
+                    writer.Write(strBytes);
+                }
+
+                long currentPos = buffer.Position;
+                buffer.Seek(stringTableOffsetPosition, SeekOrigin.Begin);
+                writer.Write((uint)stringTableOffset);
+                buffer.Seek(currentPos, SeekOrigin.Begin);
+
+                return buffer.ToArray();
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to convert XML to BXML: {ex.Message}", ex);
+            }
+        }
+
+        private static XElement ReadElement(BinaryReader reader, string[] stringTable)
+        {
+            byte nodeType = reader.ReadByte();
+
+            if (nodeType != 1)
+                throw new InvalidOperationException($"Unexpected node type: {nodeType}");
+
+            ushort tagIndex = reader.ReadUInt16();
+            string tagName = stringTable[tagIndex];
+
+            var element = new XElement(tagName);
+
+            ushort attrCount = reader.ReadUInt16();
+            for (int i = 0; i < attrCount; i++)
+            {
+                ushort nameIndex = reader.ReadUInt16();
+                ushort valueIndex = reader.ReadUInt16();
+                string attrName = stringTable[nameIndex];
+                string attrValue = stringTable[valueIndex];
+                element.SetAttributeValue(attrName, attrValue);
+            }
+
+            long position = reader.BaseStream.Position;
+            if (reader.BaseStream.Position < reader.BaseStream.Length)
+            {
+                byte nextByte = reader.ReadByte();
+                if (nextByte == 2)
+                {
+                    ushort textIndex = reader.ReadUInt16();
+                    element.Value = stringTable[textIndex];
+                }
+                else
+                {
+                    reader.BaseStream.Seek(position, SeekOrigin.Begin);
+                }
+            }
+
+            ushort childCount = reader.ReadUInt16();
+            for (int i = 0; i < childCount; i++)
+            {
+                XElement child = ReadElement(reader, stringTable);
+                element.Add(child);
+            }
+
+            return element;
+        }
+
+        private static void ProcessElement(XElement element, BinaryWriter writer, Func<string, ushort> addString)
+        {
+            writer.Write((byte)1);
+
+            ushort tagIndex = addString(element.Name.LocalName);
+            writer.Write(tagIndex);
+
+            var attrs = element.Attributes().ToArray();
+            writer.Write((ushort)attrs.Length);
+
+            foreach (var attr in attrs)
+            {
+                ushort nameIndex = addString(attr.Name.LocalName);
+                ushort valueIndex = addString(attr.Value);
+                writer.Write(nameIndex);
+                writer.Write(valueIndex);
+            }
+
+            if (!string.IsNullOrEmpty(element.Value) && !element.HasElements)
+            {
+                writer.Write((byte)2);
+                ushort textIndex = addString(element.Value);
+                writer.Write(textIndex);
+            }
+
+            var children = element.Elements().ToArray();
+            writer.Write((ushort)children.Length);
+
+            foreach (var child in children)
+            {
+                ProcessElement(child, writer, addString);
+            }
+        }        
     }
 }

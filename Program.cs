@@ -163,6 +163,7 @@ class Program
             "messagepack" => ".msgpack",
             "cbor" => ".cbor",
             "protobuf" => ".pb",
+            "bxml" => ".bxml",
             _ => ".out"
         };
     }
