@@ -1,4 +1,6 @@
-﻿using MessagePack;
+﻿using Google.Protobuf;
+using Google.Protobuf.WellKnownTypes;
+using MessagePack;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using PeterO.Cbor;
@@ -17,7 +19,7 @@ namespace FormatConverter
     {
         public static readonly HashSet<string> SupportedFormats = new(StringComparer.OrdinalIgnoreCase)
         {
-            "json", "yaml", "xml", "messagepack", "cbor"
+            "json", "yaml", "xml", "messagepack", "cbor", "protobuf"
         };
 
         public static string ConvertFormat(string input, string fromFormat, string toFormat)
@@ -52,6 +54,10 @@ namespace FormatConverter
             {
                 throw new FormatException($"Invalid CBOR input: {ex.Message}", ex);
             }
+            catch (InvalidProtocolBufferException ex)
+            {
+                throw new FormatException($"Invalid Protobuf input: {ex.Message}", ex);
+            }
             catch (Exception ex)
             {
                 throw new FormatException($"Conversion failed: {ex.Message}", ex);
@@ -67,6 +73,7 @@ namespace FormatConverter
                 "xml" => XmlToJson(input),
                 "messagepack" => MessagePackToJson(input),
                 "cbor" => CborToJson(input),
+                "protobuf" => ProtobufToJson(input),
                 _ => throw new InvalidOperationException("Unreachable code (invalid input format)")
             };
         }
@@ -80,6 +87,7 @@ namespace FormatConverter
                 "xml" => JsonToXml(data),
                 "messagepack" => JsonToMessagePack(data),
                 "cbor" => JsonToCbor(data),
+                "protobuf" => JsonToProtobuf(data),
                 _ => throw new InvalidOperationException("Unreachable code (invalid output format)")
             };
         }
@@ -234,6 +242,83 @@ namespace FormatConverter
             {
                 throw new InvalidOperationException($"Failed to serialize JSON to CBOR: {ex.Message}", ex);
             }
+        }
+
+        private static JObject ProtobufToJson(string base64Input)
+        {
+            try
+            {
+                byte[] bytes = Convert.FromBase64String(base64Input);
+
+                Struct protobufStruct = Struct.Parser.ParseFrom(bytes);
+
+                string jsonString = protobufStruct.ToString();
+
+                return JObject.Parse(jsonString);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to deserialize Protobuf to JSON: {ex.Message}", ex);
+            }
+        }
+
+        private static string JsonToProtobuf(JObject json)
+        {
+            try
+            {
+                Struct protobufStruct = ConvertJObjectToStruct(json);
+
+                byte[] bytes = protobufStruct.ToByteArray();
+
+                return Convert.ToBase64String(bytes);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to serialize JSON to Protobuf: {ex.Message}", ex);
+            }
+        }
+
+        private static Struct ConvertJObjectToStruct(JObject json)
+        {
+            var structValue = new Struct();
+
+            foreach (var property in json.Properties())
+            {
+                structValue.Fields[property.Name] = ConvertJTokenToValue(property.Value);
+            }
+
+            return structValue;
+        }
+
+        private static Value ConvertJTokenToValue(JToken token)
+        {
+            return token.Type switch
+            {
+                JTokenType.String => Value.ForString(token.Value<string>() ?? ""),
+                JTokenType.Integer => Value.ForNumber(token.Value<double>()),
+                JTokenType.Float => Value.ForNumber(token.Value<double>()),
+                JTokenType.Boolean => Value.ForBool(token.Value<bool>()),
+                JTokenType.Null => Value.ForNull(),
+                JTokenType.Array => ConvertJArrayToValue(token as JArray),
+                JTokenType.Object => ConvertJObjectToValue(token as JObject),
+                JTokenType.Date => Value.ForString(token.Value<DateTime>().ToString("O")),
+                _ => Value.ForString(token.ToString())
+            };
+        }
+
+        private static Value ConvertJArrayToValue(JArray? array)
+        {
+            if (array == null) return Value.ForNull();
+
+            var values = array.Select(ConvertJTokenToValue).ToArray();
+            return Value.ForList(values);
+        }
+
+        private static Value ConvertJObjectToValue(JObject? obj)
+        {
+            if (obj == null) return Value.ForNull();
+
+            return Value.ForStruct(ConvertJObjectToStruct(obj));
         }
     }
 }

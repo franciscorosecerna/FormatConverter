@@ -92,7 +92,7 @@ class Program
         {
             sb.Append(format + ", ");
         }
-        sb.Remove(sb.Length - 2, 1);
+        sb.Remove(sb.Length - 2, 2);
         Console.WriteLine("Supported formats: " + sb.ToString());
         Console.WriteLine();
         Console.WriteLine("Options:");
@@ -108,7 +108,7 @@ class Program
     {
         try
         {
-            if (format == "messagepack" || format == "cbor")
+            if (format == "messagepack" || format == "cbor" || format == "protobuf")
             {
                 byte[] bytes = File.ReadAllBytes(filePath);
                 return Convert.ToBase64String(bytes);
@@ -128,7 +128,7 @@ class Program
     {
         try
         {
-            if (format == "messagepack" || format == "cbor")
+            if (format == "messagepack" || format == "cbor" || format == "protobuf")
             {
                 byte[] bytes = Convert.FromBase64String(content);
                 File.WriteAllBytes(filePath, bytes);
@@ -162,6 +162,7 @@ class Program
             "yaml" => ".yaml",
             "messagepack" => ".msgpack",
             "cbor" => ".cbor",
+            "protobuf" => ".pb",
             _ => ".out"
         };
     }

@@ -16,6 +16,7 @@ This tool converts between the following data formats:
 | **YAML**     | `.yaml`     |
 | **MessagePack** | `.msgpack` |
 | **CBOR**     | `.cbor`     |
+| **Protobuf**   | `.proto.bin`  |
 ---
 
 ## How to Use
@@ -26,14 +27,14 @@ This tool converts between the following data formats:
 dotnet run -- <input-file> <input-format> <output-format> [--force]
 ```
 - Replace `<input-file>` with your file path.
-- Replace `<input-format>` and `<output-format>` with one of: json, xml, yaml, messagepack, cbor.
+- Replace `<input-format>` and `<output-format>` with one of: `json`, `xml`, `yaml`, `messagepack`, `cbor`, `protobuf`.
 - Use `--force` to overwrite existing files.
 ---
 
 ## Important Notes
 - This tool currently supports **conversions between JSON and other formats only** (e.g., JSON ⇄ XML, JSON ⇄ YAML, etc.).
 - Direct conversions **between non-JSON formats** (e.g., XML ⇄ YAML, MessagePack ⇄ CBOR) are **not supported**.
-- Use `--force` **carefully** — it will overwrite files without asking.
+- Use `--force` **carefully** - it will overwrite files without asking.
 - If the tool crashes, blame the universe 🌌 (*or read the error message, maybe*).
 ---
 
