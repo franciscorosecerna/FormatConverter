@@ -1,7 +1,7 @@
 # Format Converter
 
 *"I woke up and thought: let's cook something..."*  
-So here it is — a **Format Converter** that magically transforms your files between different formats, like a culinary master turning ingredients into a gourmet dish.
+So here it is - a **Format Converter** that magically transforms your files between different formats, like a culinary master turning ingredients into a gourmet dish.
 
 ---
 
@@ -16,7 +16,7 @@ This tool converts between the following data formats:
 | **YAML**     | `.yaml`     |
 | **MessagePack** | `.msgpack` |
 | **CBOR**     | `.cbor`     |
-| **Protobuf**   | `.proto.bin`  |
+| **Protobuf**   | `.pb`  |
 ---
 
 ## How to Use
