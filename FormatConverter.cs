@@ -4,11 +4,6 @@ using MessagePack;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using PeterO.Cbor;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Xml.Linq;
 using YamlDotNet.Core;
@@ -106,8 +101,53 @@ namespace FormatConverter
         private static JObject XmlToJson(string xml)
         {
             var doc = XDocument.Parse(xml);
-            string json = JsonConvert.SerializeXNode(doc, Formatting.None, omitRootObject: true);
-            return JObject.Parse(json);
+
+            var json = new JObject();
+            foreach (var elem in doc.Root.Elements())
+            {
+                var jvalue = ConvertXmlElementToJToken(elem);
+                json[elem.Name.LocalName] = jvalue;
+            }
+
+            return json;
+        }
+
+        private static JToken ConvertXmlElementToJToken(XElement element)
+        {
+            string? type = element.Attribute("type")?.Value ?? "string";
+
+            if (type == "object")
+            {
+                var childObj = new JObject();
+                foreach (var child in element.Elements())
+                {
+                    childObj[child.Name.LocalName] = ConvertXmlElementToJToken(child);
+                }
+                return childObj;
+            }
+            else if (type == "array")
+            {
+                var array = new JArray();
+                foreach (var item in element.Elements())
+                {
+                    array.Add(ConvertXmlElementToJToken(item));
+                }
+                return array;
+            }
+
+            if (type == "null")
+                return JValue.CreateNull();
+
+            string value = element.Value;
+
+            return type switch
+            {
+                "int" => int.TryParse(value, out var i) ? new JValue(i) : JValue.CreateNull(),
+                "float" => double.TryParse(value, out var d) ? new JValue(d) : JValue.CreateNull(),
+                "bool" => bool.TryParse(value, out var b) ? new JValue(b) : JValue.CreateNull(),
+                "string" => new JValue(value),
+                _ => new JValue(value)
+            };
         }
 
         private static string JsonToYaml(JObject json)
@@ -125,7 +165,7 @@ namespace FormatConverter
             return serializer.Serialize(obj);
         }
 
-        private static object ConvertJTokenToObject(JToken token)
+        private static object? ConvertJTokenToObject(JToken token)
         {
             switch (token.Type)
             {
@@ -170,8 +210,62 @@ namespace FormatConverter
 
         private static string JsonToXml(JObject json)
         {
-            var doc = JsonConvert.DeserializeXNode(json.ToString(), "Root");
-            return doc?.ToString() ?? throw new InvalidOperationException("Failed to convert JSON to XML.");
+            XElement root = new("Root");
+
+            foreach (var prop in json.Properties())
+            {
+                XElement elem = ConvertJsonTokenToXmlElement(prop.Name, prop.Value);
+                root.Add(elem);
+            }
+
+            var doc = new XDocument(new XDeclaration("1.0", "utf-8", null), root);
+            return doc.ToString();
+        }
+
+        private static XElement ConvertJsonTokenToXmlElement(string name, JToken token)
+        {
+            var element = new XElement(name);
+
+            switch (token.Type)
+            {
+                case JTokenType.Integer:
+                    element.Value = token.ToString();
+                    element.SetAttributeValue("type", "int");
+                    break;
+                case JTokenType.Float:
+                    element.Value = token.ToString();
+                    element.SetAttributeValue("type", "float");
+                    break;
+                case JTokenType.Boolean:
+                    element.Value = token.ToString().ToLower();
+                    element.SetAttributeValue("type", "bool");
+                    break;
+                case JTokenType.Null:
+                    element.SetAttributeValue("type", "null");
+                    break;
+                case JTokenType.String:
+                    element.Value = token.ToString();
+                    element.SetAttributeValue("type", "string");
+                    break;
+                case JTokenType.Object:
+                    element.SetAttributeValue("type", "object");
+                    foreach (var child in ((JObject)token).Properties())
+                    {
+                        element.Add(ConvertJsonTokenToXmlElement(child.Name, child.Value));
+                    }
+                    break;
+                case JTokenType.Array:
+                    element.SetAttributeValue("type", "array");
+                    foreach (var item in (JArray)token)
+                    {
+                        element.Add(ConvertJsonTokenToXmlElement("item", item));
+                    }
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unsupported token type: {token.Type}");
+            }
+
+            return element;
         }
 
         private static JObject MessagePackToJson(string base64Input)
@@ -324,31 +418,50 @@ namespace FormatConverter
             return Value.ForStruct(ConvertJObjectToStruct(obj));
         }
 
-        private static JObject BxmlToJson(string base64Input)
-        {
-            try
-            {
-                byte[] bxmlData = Convert.FromBase64String(base64Input);
-
-                string xmlString = BxmlToXml(bxmlData);
-
-                return XmlToJson(xmlString);
-            }
-            catch (Exception ex)
-            {
-                throw new InvalidOperationException($"Failed to deserialize BXML to JSON: {ex.Message}", ex);
-            }
-        }
-
         private static string JsonToBxml(JObject json)
         {
             try
             {
-                string xmlString = JsonToXml(json);
+                using var buffer = new MemoryStream();
+                using var writer = new BinaryWriter(buffer);
+                writer.Write(Encoding.ASCII.GetBytes("BXML"));
+                writer.Write((uint)1);
 
-                byte[] bxmlData = XmlToBxml(xmlString);
+                var elements = new List<BxmlElement>();
+                var stringTable = new Dictionary<string, uint>();
+                uint stringIndex = 0;
 
-                return Convert.ToBase64String(bxmlData);
+                uint AddString(string s)
+                {
+                    if (string.IsNullOrEmpty(s)) s = "";
+                    if (!stringTable.ContainsKey(s))
+                    {
+                        stringTable[s] = stringIndex++;
+                    }
+                    return stringTable[s];
+                }
+
+                var rootElement = ConvertJsonToBxmlElement("Root", json, AddString);
+                elements.Add(rootElement);
+
+                writer.Write((uint)elements.Count);
+
+                foreach (var element in elements)
+                {
+                    WriteElement(writer, element);
+                }
+
+                writer.Write((uint)stringTable.Count);
+                var sortedStrings = stringTable.OrderBy(kvp => kvp.Value).Select(kvp => kvp.Key).ToArray();
+
+                foreach (var str in sortedStrings)
+                {
+                    byte[] strBytes = Encoding.UTF8.GetBytes(str);
+                    writer.Write((uint)strBytes.Length);
+                    writer.Write(strBytes);
+                }
+
+                return Convert.ToBase64String(buffer.ToArray());
             }
             catch (Exception ex)
             {
@@ -356,10 +469,12 @@ namespace FormatConverter
             }
         }
 
-        private static string BxmlToXml(byte[] bxmlData)
+        private static JObject BxmlToJson(string base64Input)
         {
             try
             {
+                byte[] bxmlData = Convert.FromBase64String(base64Input);
+
                 using var buffer = new MemoryStream(bxmlData);
                 using var reader = new BinaryReader(buffer);
                 var signature = reader.ReadBytes(4);
@@ -370,10 +485,13 @@ namespace FormatConverter
                 if (version != 1)
                     throw new InvalidOperationException($"Unsupported BXML version: {version}");
 
-                uint stringTableOffset = reader.ReadUInt32();
+                uint elementCount = reader.ReadUInt32();
 
-                long currentPos = buffer.Position;
-                buffer.Seek(stringTableOffset, SeekOrigin.Begin);
+                var elements = new List<BxmlElement>();
+                for (int i = 0; i < elementCount; i++)
+                {
+                    elements.Add(ReadElement(reader));
+                }
 
                 uint stringCount = reader.ReadUInt32();
                 var stringTable = new string[stringCount];
@@ -381,165 +499,226 @@ namespace FormatConverter
                 for (int i = 0; i < stringCount; i++)
                 {
                     uint stringLength = reader.ReadUInt32();
+                    if (stringLength > 100000)
+                        throw new InvalidOperationException($"String too long: {stringLength}");
+
                     byte[] stringBytes = reader.ReadBytes((int)stringLength);
                     stringTable[i] = Encoding.UTF8.GetString(stringBytes);
                 }
 
-                buffer.Seek(currentPos, SeekOrigin.Begin);
+                if (elements.Count > 0)
+                {
+                    return ConvertBxmlElementToJson(elements[0], stringTable);
+                }
 
-                XElement root = ReadElement(reader, stringTable);
-
-                var doc = new XDocument(new XDeclaration("1.0", "utf-8", null), root);
-
-                return doc.ToString();
+                return [];
             }
             catch (Exception ex)
             {
-                throw new InvalidOperationException($"Failed to convert BXML to XML: {ex.Message}", ex);
+                throw new InvalidOperationException($"Failed to deserialize BXML to JSON: {ex.Message}", ex);
             }
-        }
+        }       
 
-        private static byte[] XmlToBxml(string xmlString)
+        private static BxmlElement ConvertJsonToBxmlElement(string name, JToken token, Func<string, uint> addString)
         {
-            try
+            var element = new BxmlElement
             {
-                XDocument doc = XDocument.Parse(xmlString);
+                NameIndex = addString(name)
+            };
 
-                using var buffer = new MemoryStream();
-                using var writer = new BinaryWriter(buffer);
-
-                var stringTable = new Dictionary<string, ushort>();
-                ushort stringCounter = 0;
-
-                ushort AddString(string s)
-                {
-                    if (string.IsNullOrEmpty(s)) s = "";
-                    if (!stringTable.ContainsKey(s))
+            switch (token.Type)
+            {
+                case JTokenType.Object:
+                    element.Attributes[addString("type")] = addString("object");
+                    foreach (var property in ((JObject)token).Properties())
                     {
-                        stringTable[s] = stringCounter++;
+                        var child = ConvertJsonToBxmlElement(property.Name, property.Value, addString);
+                        element.Children.Add(child);
                     }
-                    return stringTable[s];
-                }
+                    break;
 
-                writer.Write(Encoding.ASCII.GetBytes("BXML"));
-                writer.Write((uint)1);
+                case JTokenType.Array:
+                    element.Attributes[addString("type")] = addString("array");
+                    foreach (var item in (JArray)token)
+                    {
+                        var child = ConvertJsonToBxmlElement("item", item, addString);
+                        element.Children.Add(child);
+                    }
+                    break;
 
-                long stringTableOffsetPosition = buffer.Position;
-                writer.Write((uint)0);
+                case JTokenType.String:
+                    element.Attributes[addString("type")] = addString("string");
+                    element.TextIndex = addString(token.Value<string>() ?? "");
+                    break;
 
-                if (doc.Root != null)
-                {
-                    ProcessElement(doc.Root, writer, AddString);
-                }
+                case JTokenType.Integer:
+                    element.Attributes[addString("type")] = addString("int");
+                    element.TextIndex = addString(token.ToString());
+                    break;
 
-                long stringTableOffset = buffer.Position;
-                writer.Write((uint)stringTable.Count);
+                case JTokenType.Float:
+                    element.Attributes[addString("type")] = addString("float");
+                    element.TextIndex = addString(token.ToString());
+                    break;
 
-                var sortedStrings = new string[stringTable.Count];
-                foreach (var kvp in stringTable)
-                {
-                    sortedStrings[kvp.Value] = kvp.Key;
-                }
+                case JTokenType.Boolean:
+                    element.Attributes[addString("type")] = addString("bool");
+                    element.TextIndex = addString(token.ToString().ToLower());
+                    break;
 
-                foreach (var str in sortedStrings)
-                {
-                    byte[] strBytes = Encoding.UTF8.GetBytes(str);
-                    writer.Write((uint)strBytes.Length);
-                    writer.Write(strBytes);
-                }
+                case JTokenType.Null:
+                    element.Attributes[addString("type")] = addString("null");
+                    break;
 
-                long currentPos = buffer.Position;
-                buffer.Seek(stringTableOffsetPosition, SeekOrigin.Begin);
-                writer.Write((uint)stringTableOffset);
-                buffer.Seek(currentPos, SeekOrigin.Begin);
-
-                return buffer.ToArray();
-            }
-            catch (Exception ex)
-            {
-                throw new InvalidOperationException($"Failed to convert XML to BXML: {ex.Message}", ex);
-            }
-        }
-
-        private static XElement ReadElement(BinaryReader reader, string[] stringTable)
-        {
-            byte nodeType = reader.ReadByte();
-
-            if (nodeType != 1)
-                throw new InvalidOperationException($"Unexpected node type: {nodeType}");
-
-            ushort tagIndex = reader.ReadUInt16();
-            string tagName = stringTable[tagIndex];
-
-            var element = new XElement(tagName);
-
-            ushort attrCount = reader.ReadUInt16();
-            for (int i = 0; i < attrCount; i++)
-            {
-                ushort nameIndex = reader.ReadUInt16();
-                ushort valueIndex = reader.ReadUInt16();
-                string attrName = stringTable[nameIndex];
-                string attrValue = stringTable[valueIndex];
-                element.SetAttributeValue(attrName, attrValue);
-            }
-
-            long position = reader.BaseStream.Position;
-            if (reader.BaseStream.Position < reader.BaseStream.Length)
-            {
-                byte nextByte = reader.ReadByte();
-                if (nextByte == 2)
-                {
-                    ushort textIndex = reader.ReadUInt16();
-                    element.Value = stringTable[textIndex];
-                }
-                else
-                {
-                    reader.BaseStream.Seek(position, SeekOrigin.Begin);
-                }
-            }
-
-            ushort childCount = reader.ReadUInt16();
-            for (int i = 0; i < childCount; i++)
-            {
-                XElement child = ReadElement(reader, stringTable);
-                element.Add(child);
+                default:
+                    element.Attributes[addString("type")] = addString("string");
+                    element.TextIndex = addString(token.ToString());
+                    break;
             }
 
             return element;
         }
 
-        private static void ProcessElement(XElement element, BinaryWriter writer, Func<string, ushort> addString)
+        private static void WriteElement(BinaryWriter writer, BxmlElement element)
         {
             writer.Write((byte)1);
+            writer.Write(element.NameIndex);
 
-            ushort tagIndex = addString(element.Name.LocalName);
-            writer.Write(tagIndex);
-
-            var attrs = element.Attributes().ToArray();
-            writer.Write((ushort)attrs.Length);
-
-            foreach (var attr in attrs)
+            writer.Write((uint)element.Attributes.Count);
+            foreach (var attr in element.Attributes)
             {
-                ushort nameIndex = addString(attr.Name.LocalName);
-                ushort valueIndex = addString(attr.Value);
-                writer.Write(nameIndex);
-                writer.Write(valueIndex);
+                writer.Write(attr.Key);
+                writer.Write(attr.Value);
             }
 
-            if (!string.IsNullOrEmpty(element.Value) && !element.HasElements)
+            if (element.TextIndex.HasValue)
             {
-                writer.Write((byte)2);
-                ushort textIndex = addString(element.Value);
-                writer.Write(textIndex);
+                writer.Write((byte)1);
+                writer.Write(element.TextIndex.Value);
+            }
+            else
+            {
+                writer.Write((byte)0);
             }
 
-            var children = element.Elements().ToArray();
-            writer.Write((ushort)children.Length);
-
-            foreach (var child in children)
+            writer.Write((uint)element.Children.Count);
+            foreach (var child in element.Children)
             {
-                ProcessElement(child, writer, addString);
+                WriteElement(writer, child);
             }
-        }        
+        }
+
+        private static BxmlElement ReadElement(BinaryReader reader)
+        {
+            byte nodeType = reader.ReadByte();
+            if (nodeType != 1)
+                throw new InvalidOperationException($"Expected element type, got {nodeType}");
+
+            var element = new BxmlElement
+            {
+                NameIndex = reader.ReadUInt32()
+            };
+
+            uint attrCount = reader.ReadUInt32();
+            for (int i = 0; i < attrCount; i++)
+            {
+                uint nameIndex = reader.ReadUInt32();
+                uint valueIndex = reader.ReadUInt32();
+                element.Attributes[nameIndex] = valueIndex;
+            }
+
+            byte hasText = reader.ReadByte();
+            if (hasText == 1)
+            {
+                element.TextIndex = reader.ReadUInt32();
+            }
+
+            uint childCount = reader.ReadUInt32();
+            for (int i = 0; i < childCount; i++)
+            {
+                element.Children.Add(ReadElement(reader));
+            }
+
+            return element;
+        }
+
+        private static JObject ConvertBxmlElementToJson(BxmlElement element, string[] stringTable)
+        {
+            string elementName = element.NameIndex < stringTable.Length ? stringTable[element.NameIndex] : "unknown";
+
+            if (elementName == "Root")
+            {
+                var rootContent = new JObject();
+                foreach (var child in element.Children)
+                {
+                    var childJson = ConvertBxmlElementToJson(child, stringTable);
+                    foreach (var prop in childJson.Properties())
+                    {
+                        rootContent[prop.Name] = prop.Value;
+                    }
+                }
+                return rootContent;
+            }
+
+            var json = new JObject();
+
+            string type = "string";
+            foreach (var attr in element.Attributes)
+            {
+                if (attr.Key < stringTable.Length && stringTable[attr.Key] == "type")
+                {
+                    if (attr.Value < stringTable.Length)
+                    {
+                        type = stringTable[attr.Value];
+                    }
+                    break;
+                }
+            }
+
+            switch (type)
+            {
+                case "object":
+                    var obj = new JObject();
+                    foreach (var child in element.Children)
+                    {
+                        var childJson = ConvertBxmlElementToJson(child, stringTable);
+                        string childName = child.NameIndex < stringTable.Length ? stringTable[child.NameIndex] : "unknown";
+                        obj[childName] = childJson.Properties().FirstOrDefault()?.Value;
+                    }
+                    json[elementName] = obj;
+                    break;
+
+                case "array":
+                    var array = new JArray();
+                    foreach (var child in element.Children)
+                    {
+                        var childJson = ConvertBxmlElementToJson(child, stringTable);
+                        array.Add(childJson.Properties().FirstOrDefault()?.Value);
+                    }
+                    json[elementName] = array;
+                    break;
+
+                default:
+                    if (element.TextIndex.HasValue && element.TextIndex.Value < stringTable.Length)
+                    {
+                        string value = stringTable[element.TextIndex.Value];
+                        json[elementName] = type switch
+                        {
+                            "int" => (JToken)(int.TryParse(value, out var i) ? i : 0),
+                            "float" => (JToken)(double.TryParse(value, out var d) ? d : 0.0),
+                            "bool" => (JToken)(bool.TryParse(value, out var b) ? b : false),
+                            "null" => null,
+                            _ => (JToken)value,
+                        };
+                    }
+                    else
+                    {
+                        json[elementName] = type == "null" ? null : "";
+                    }
+                    break;
+            }
+
+            return json;
+        }
     }
 }

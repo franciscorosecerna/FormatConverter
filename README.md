@@ -17,6 +17,8 @@ This tool converts between the following data formats:
 | **MessagePack** | `.msgpack` |
 | **CBOR**     | `.cbor`     |
 | **Protobuf**   | `.pb`  |
+| **BXML**   | `.bxml`  |
+
 ---
 
 ## How to Use
@@ -27,7 +29,7 @@ This tool converts between the following data formats:
 dotnet run -- <input-file> <input-format> <output-format> [--force]
 ```
 - Replace `<input-file>` with your file path.
-- Replace `<input-format>` and `<output-format>` with one of: `json`, `xml`, `yaml`, `messagepack`, `cbor`, `protobuf`.
+- Replace `<input-format>` and `<output-format>` with one of: `json`, `xml`, `yaml`, `messagepack`, `cbor`, `protobuf`, `bxml`.
 - Use `--force` to overwrite existing files.
 ---
 
@@ -36,6 +38,7 @@ dotnet run -- <input-file> <input-format> <output-format> [--force]
 - Direct conversions **between non-JSON formats** (e.g., XML ⇄ YAML, MessagePack ⇄ CBOR) are **not supported**.
 - Use `--force` **carefully** - it will overwrite files without asking.
 - If the tool crashes, blame the universe 🌌 (*or read the error message, maybe*).
+- Not all formats **preserve original data types** with full accuracy.
 ---
 
 ## Installation

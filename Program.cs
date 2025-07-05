@@ -17,7 +17,7 @@ class Program
         string? inputFile = args[0];
         string? inputFormat = args[1]?.ToLower();
         string? outputFormat = args[2]?.ToLower();
-        bool forceOverwrite = args.Contains("--force");
+        bool forceOverwrite = args.Any(arg => arg == "--force" || arg == "--f");
 
         if (!File.Exists(inputFile))
         {
@@ -86,14 +86,7 @@ class Program
         Console.WriteLine();
         Console.WriteLine("Usage: FormatConverter <input-file> <input-format> <output-format> [--force]");
         Console.WriteLine();
-
-        StringBuilder sb = new();
-        foreach(var format in FormatConverter.FormatConverter.SupportedFormats)
-        {
-            sb.Append(format + ", ");
-        }
-        sb.Remove(sb.Length - 2, 2);
-        Console.WriteLine("Supported formats: " + sb.ToString());
+        Console.WriteLine($"Supported formats: " + string.Join(", ", FormatConverter.FormatConverter.SupportedFormats));
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine("  --force    Overwrite output file if it already exists");
