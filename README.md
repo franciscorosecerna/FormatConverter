@@ -26,11 +26,17 @@ This tool converts between the following data formats:
 ### Basic Command
 
 ```
-dotnet run -- <input-file> <input-format> <output-format> [--force]
+dotnet run -- <input-file> <input-format> <output-format> [options]
 ```
 - Replace `<input-file>` with your file path.
 - Replace `<input-format>` and `<output-format>` with one of: `json`, `xml`, `yaml`, `messagepack`, `cbor`, `protobuf`, `bxml`.
-- Use `--force` to overwrite existing files.
+
+### Available Options
+- `--force` Overwrite existing files
+- `--verbose` Enable detailed output for debugging
+- `--version` Display the current version of the tool
+- `--help` Self-explained command, isn't it?
+- 
 ---
 
 ## Important Notes
