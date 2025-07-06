@@ -42,10 +42,9 @@ dotnet run -- <input-file> <input-format> <output-format> [--force]
 ---
 
 ## Installation
-- Clone this repo:
+- Install
 ```
-git clone https://github.com/franciscorosecerna/FormatConverter.git
-cd FormatConverter
+dotnet tool install --global formatconverter
 ```
 - Build and run:
 ```

@@ -7,6 +7,14 @@
     <Nullable>enable</Nullable>
     <DockerDefaultTargetOS>Windows</DockerDefaultTargetOS>
     <DockerfileContext>.</DockerfileContext>
+	<PackAsTool>true</PackAsTool>
+	<ToolCommandName>formatconverter</ToolCommandName>
+	<PackageLicenseExpression>MIT</PackageLicenseExpression>
+	<PackageProjectUrl>https://github.com/franciscorosecerna/FormatConverter</PackageProjectUrl>
+	<RepositoryUrl>https://github.com/franciscorosecerna/FormatConverter.git</RepositoryUrl>
+	<RepositoryType>git</RepositoryType>
+	<Version>1.0.2</Version>
+	<PackageDescription>Convert between JSON, XML, YAML, MessagePack, Protobuf, CBOR, and BXML formats.</PackageDescription>
   </PropertyGroup>
 
   <ItemGroup>

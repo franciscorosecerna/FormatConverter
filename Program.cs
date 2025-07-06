@@ -6,18 +6,34 @@ using System.Text;
 
 class Program
 {
+    public const string VERSION = "1.0.2";
     static void Main(string[] args)
     {
-        if (args.Length < 3)
+        if (args.Any(arg => arg == "--help" || arg == "--h"))
         {
             ShowUsage();
             return;
         }
 
-        string? inputFile = args[0];
-        string? inputFormat = args[1]?.ToLower();
-        string? outputFormat = args[2]?.ToLower();
+        if (args.Any(arg => arg == "--version" || arg == "--v"))
+        {
+            Console.WriteLine($"FormatConverter CLI v{VERSION}");
+            return;
+        }
         bool forceOverwrite = args.Any(arg => arg == "--force" || arg == "--f");
+        bool verbose = args.Contains("--verbose");
+
+        var mainArgs = args.Where(a => !a.StartsWith("--") && !a.StartsWith("-")).ToArray();
+
+        if (mainArgs.Length < 3)
+        {
+            ShowUsage();
+            return;
+        }
+
+        string inputFile = mainArgs[0];
+        string inputFormat = mainArgs[1].ToLower();
+        string outputFormat = mainArgs[2].ToLower();
 
         if (!File.Exists(inputFile))
         {
@@ -31,9 +47,18 @@ class Program
             return;
         }
 
-        if (!FormatConverter.FormatConverter.SupportedFormats.Contains(inputFormat) || !FormatConverter.FormatConverter.SupportedFormats.Contains(outputFormat))
+        if (!FormatConverter.FormatConverter.SupportedFormats.Contains(inputFormat) 
+            || !FormatConverter.FormatConverter.SupportedFormats.Contains(outputFormat))
         {
             Console.WriteLine($"Error: Unsupported format. Supported formats: {string.Join(", ", FormatConverter.FormatConverter.SupportedFormats)}");
+            return;
+        }
+
+        if (inputFormat != "json" && outputFormat != "json")
+        {
+            Console.WriteLine("Unsupported conversion: Only conversions involving JSON are allowed.");
+            Console.WriteLine("Allowed: JSON → other format OR other format → JSON");
+            Console.WriteLine("Not allowed: e.g., XML → YAML, CBOR → Protobuf, etc.");
             return;
         }
 
@@ -45,7 +70,10 @@ class Program
 
         try
         {
+            if (verbose) Console.WriteLine($"Reading input file: {inputFile}");
             string inputText = ReadInputFile(inputFile, inputFormat);
+
+            if (verbose) Console.WriteLine($"Converting from {inputFormat} to {outputFormat}...");
             string result = FormatConverter.FormatConverter.ConvertFormat(inputText, inputFormat, outputFormat);
 
             string outputFile = GenerateOutputFileName(inputFile, outputFormat);
@@ -56,8 +84,11 @@ class Program
                 return;
             }
 
+            if (verbose) Console.WriteLine($"Writing output to: {outputFile}");
             WriteOutputFile(outputFile, result, outputFormat);
-            Console.WriteLine($"Success: Converted {inputFormat.ToUpper()} to {outputFormat.ToUpper()}. Output saved to '{outputFile}'");
+
+            Console.WriteLine($"Success: Converted {inputFormat.ToUpper()} to {outputFormat.ToUpper()}.");
+            Console.WriteLine($"Output: {outputFile}");
         }
         catch (FormatException ex)
         {
@@ -89,7 +120,10 @@ class Program
         Console.WriteLine($"Supported formats: " + string.Join(", ", FormatConverter.FormatConverter.SupportedFormats));
         Console.WriteLine();
         Console.WriteLine("Options:");
-        Console.WriteLine("  --force    Overwrite output file if it already exists");
+        Console.WriteLine("  --force, --f       Overwrite output file if it already exists");
+        Console.WriteLine("  --verbose          Enable detailed output");
+        Console.WriteLine("  --help, -h         Show this help message");
+        Console.WriteLine("  --version, -v      Show version info");
         Console.WriteLine();
         Console.WriteLine("Examples:");
         Console.WriteLine("  FormatConverter data.json json yaml");
