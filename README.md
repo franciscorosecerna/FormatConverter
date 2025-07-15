@@ -26,7 +26,7 @@ This tool converts between the following data formats:
 ### Basic Command
 
 ```
-dotnet run -- <input-file> <input-format> <output-format> [options]
+formatconverter <input-file> <input-format> <output-format> [options]
 ```
 - Replace `<input-file>` with your file path.
 - Replace `<input-format>` and `<output-format>` with one of: `json`, `xml`, `yaml`, `messagepack`, `cbor`, `protobuf`, `bxml`.
@@ -43,19 +43,13 @@ dotnet run -- <input-file> <input-format> <output-format> [options]
 - This tool currently supports **conversions between JSON and other formats only** (e.g., JSON ⇄ XML, JSON ⇄ YAML, etc.).
 - Direct conversions **between non-JSON formats** (e.g., XML ⇄ YAML, MessagePack ⇄ CBOR) are **not supported**.
 - Use `--force` **carefully** - it will overwrite files without asking.
-- If the tool crashes, blame the universe 🌌 (*or read the error message, maybe*).
+- If the tool crashes, blame the universe 🌌 (*or read the error message, as you prefer*).
 - Not all formats **preserve original data types** with full accuracy.
 ---
 
 ## Installation
-- Install
 ```
 dotnet tool install --global formatconverter
-```
-- Build and run:
-```
-dotnet build
-dotnet run
 ```
 ---
 Bug reports, and conversion format suggestions are welcome!
