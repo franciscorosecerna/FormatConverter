@@ -10,30 +10,62 @@ namespace FormatConverter.Bxml
         {
             try
             {
+                if (string.IsNullOrEmpty(input))
+                    throw new ArgumentException("Input cannot be null or empty");
+
                 byte[] bxmlData = Convert.FromBase64String(input);
+
+                if (bxmlData.Length < 12)
+                    throw new InvalidOperationException($"BXML data too short: {bxmlData.Length} bytes");
 
                 using var buffer = new MemoryStream(bxmlData);
                 using var reader = new BinaryReader(buffer);
+
                 var signature = reader.ReadBytes(4);
-                if (Encoding.ASCII.GetString(signature) != "BXML")
-                    throw new InvalidOperationException("Invalid BXML signature");
+                string sigStr = Encoding.ASCII.GetString(signature);
+
+                if (sigStr != "BXML")
+                    throw new InvalidOperationException($"Invalid BXML signature: {sigStr}");
 
                 uint elementCount = reader.ReadUInt32();
+
+                if (elementCount == 0)
+                {
+                    return new JObject();
+                }
+
+                if (elementCount > 10000)
+                    throw new InvalidOperationException($"Unreasonable element count: {elementCount}");
 
                 var elements = new List<BxmlElement>();
                 for (int i = 0; i < elementCount; i++)
                 {
-                    elements.Add(ReadElement(reader));
+                    try
+                    {
+                        elements.Add(ReadElement(reader));
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new InvalidOperationException($"Failed to read element {i} at position {reader.BaseStream.Position}: {ex.Message}", ex);
+                    }
                 }
 
                 uint stringCount = reader.ReadUInt32();
-                var stringTable = new string[stringCount];
+                if (stringCount > 10000)
+                    throw new InvalidOperationException($"Unreasonable string count: {stringCount}");
 
+                var stringTable = new string[stringCount];
                 for (int i = 0; i < stringCount; i++)
                 {
+                    if (reader.BaseStream.Position >= reader.BaseStream.Length)
+                        throw new InvalidOperationException($"Unexpected end of stream while reading string {i}");
+
                     uint stringLength = reader.ReadUInt32();
                     if (stringLength > 100000)
-                        throw new InvalidOperationException($"String too long: {stringLength}");
+                        throw new InvalidOperationException($"String {i} too long: {stringLength}");
+
+                    if (reader.BaseStream.Position + stringLength > reader.BaseStream.Length)
+                        throw new InvalidOperationException($"String {i} extends beyond stream boundary");
 
                     byte[] stringBytes = reader.ReadBytes((int)stringLength);
                     stringTable[i] = Encoding.UTF8.GetString(stringBytes);
@@ -44,7 +76,11 @@ namespace FormatConverter.Bxml
                     return ConvertBxmlElementToJson(elements[0], stringTable);
                 }
 
-                return [];
+                return new JObject();
+            }
+            catch (FormatException ex)
+            {
+                throw new InvalidOperationException($"Invalid Base64 input: {ex.Message}", ex);
             }
             catch (Exception ex)
             {
@@ -54,30 +90,52 @@ namespace FormatConverter.Bxml
 
         private static BxmlElement ReadElement(BinaryReader reader)
         {
-            byte nodeType = reader.ReadByte();
-            if (nodeType != 1)
-                throw new InvalidOperationException($"Expected element type, got {nodeType}");
+            long startPos = reader.BaseStream.Position;
 
+            if (reader.BaseStream.Position >= reader.BaseStream.Length)
+                throw new InvalidOperationException("Unexpected end of stream while reading element");
+
+            byte nodeType = reader.ReadByte();
+
+            if (nodeType != 1)
+            {
+                throw new InvalidOperationException($"Expected element type 1, got {nodeType} at position {startPos}");
+            }
+
+            uint nameIndex = reader.ReadUInt32();
             var element = new BxmlElement
             {
-                NameIndex = reader.ReadUInt32()
+                NameIndex = nameIndex
             };
-
             uint attrCount = reader.ReadUInt32();
+
+            if (attrCount > 1000)
+                throw new InvalidOperationException($"Unreasonable attribute count: {attrCount}");
+
             for (int i = 0; i < attrCount; i++)
             {
-                uint nameIndex = reader.ReadUInt32();
-                uint valueIndex = reader.ReadUInt32();
-                element.Attributes[nameIndex] = valueIndex;
+                uint attrNameIndex = reader.ReadUInt32();
+                uint attrValueIndex = reader.ReadUInt32();
+                element.Attributes[attrNameIndex] = attrValueIndex;
             }
 
             byte hasText = reader.ReadByte();
+
             if (hasText == 1)
             {
-                element.TextIndex = reader.ReadUInt32();
+                uint textIndex = reader.ReadUInt32();
+                element.TextIndex = textIndex;
+            }
+            else if (hasText != 0)
+            {
+                throw new InvalidOperationException($"Invalid hasText flag: {hasText}");
             }
 
             uint childCount = reader.ReadUInt32();
+
+            if (childCount > 1000)
+                throw new InvalidOperationException($"Unreasonable child count: {childCount}");
+
             for (int i = 0; i < childCount; i++)
             {
                 element.Children.Add(ReadElement(reader));

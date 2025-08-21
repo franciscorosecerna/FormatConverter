@@ -12,8 +12,8 @@ namespace FormatConverter.Bxml
             {
                 using var buffer = new MemoryStream();
                 using var writer = new BinaryWriter(buffer);
+
                 writer.Write(Encoding.ASCII.GetBytes("BXML"));
-                writer.Write((uint)1);
 
                 var elements = new List<BxmlElement>();
                 var stringTable = new Dictionary<string, uint>();
@@ -40,8 +40,8 @@ namespace FormatConverter.Bxml
                 }
 
                 writer.Write((uint)stringTable.Count);
-                var sortedStrings = stringTable.OrderBy(kvp => kvp.Value).Select(kvp => kvp.Key).ToArray();
 
+                var sortedStrings = stringTable.OrderBy(kvp => kvp.Value).Select(kvp => kvp.Key).ToArray();
                 foreach (var str in sortedStrings)
                 {
                     byte[] strBytes = Encoding.UTF8.GetBytes(str);
@@ -120,6 +120,7 @@ namespace FormatConverter.Bxml
         private static void WriteElement(BinaryWriter writer, BxmlElement element)
         {
             writer.Write((byte)1);
+
             writer.Write(element.NameIndex);
 
             writer.Write((uint)element.Attributes.Count);
