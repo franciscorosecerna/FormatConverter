@@ -30,8 +30,8 @@ Basic Command
 formatconverter -i <input-file> --input-format <format> --output-format <format> [options]
 ```
 - -i <input-file> → path to your file (use - for stdin).
-- -input-format → one of: json, xml, yaml, messagepack, cbor, protobuf, bxml.
-- -output-format → target format.
+- --input-format → one of: json, xml, yaml, messagepack, cbor, protobuf, bxml.
+- --output-format → target format.
 
 If you omit -o <output-file>, the tool auto-generates one with the correct extension.
 
