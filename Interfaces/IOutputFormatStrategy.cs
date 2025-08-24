@@ -4,6 +4,7 @@ namespace FormatConverter.Interfaces
 {
     public interface IOutputFormatStrategy
     {
-        string Serialize(JObject data);
+        string Serialize(JToken data);
+        void Configure(FormatConfig config);
     }
 }

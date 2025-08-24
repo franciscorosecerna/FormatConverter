@@ -11,44 +11,64 @@ namespace FormatConverter
 {
     public static class FormatStrategyFactory
     {
-        private static readonly Dictionary<string, Func<IInputFormatStrategy>> InputStrategies = new(StringComparer.OrdinalIgnoreCase)
+        private static readonly Dictionary<string, Type> InputStrategies = new()
         {
-            ["json"] = () => new JsonInputStrategy(),
-            ["yaml"] = () => new YamlInputStrategy(),
-            ["xml"] = () => new XmlInputStrategy(),
-            ["messagepack"] = () => new MessagePackInputStrategy(),
-            ["cbor"] = () => new CborInputStrategy(),
-            ["protobuf"] = () => new ProtobufInputStrategy(),
-            ["bxml"] = () => new BxmlInputStrategy()
+            { "json", typeof(JsonInputStrategy) },
+            { "xml", typeof(XmlInputStrategy) },
+            { "yaml", typeof(YamlInputStrategy) },
+            { "messagepack", typeof(MessagePackInputStrategy) },
+            { "cbor", typeof(CborInputStrategy) },
+            { "protobuf", typeof(ProtobufInputStrategy) },
+            { "bxml", typeof(BxmlInputStrategy) }
         };
 
-        private static readonly Dictionary<string, Func<IOutputFormatStrategy>> OutputStrategies = new(StringComparer.OrdinalIgnoreCase)
+        private static readonly Dictionary<string, Type> OutputStrategies = new()
         {
-            ["json"] = () => new JsonOutputStrategy(),
-            ["yaml"] = () => new YamlOutputStrategy(),
-            ["xml"] = () => new XmlOutputStrategy(),
-            ["messagepack"] = () => new MessagePackOutputStrategy(),
-            ["cbor"] = () => new CborOutputStrategy(),
-            ["protobuf"] = () => new ProtobufOutputStrategy(),
-            ["bxml"] = () => new BxmlOutputStrategy()
+            { "json", typeof(JsonOutputStrategy) },
+            { "xml", typeof(XmlOutputStrategy) },
+            { "yaml", typeof(YamlOutputStrategy) },
+            { "messagepack", typeof(MessagePackOutputStrategy) },
+            { "cbor", typeof(CborOutputStrategy) },
+            { "protobuf", typeof(ProtobufOutputStrategy) },
+            { "bxml", typeof(BxmlOutputStrategy) }
         };
 
-        public static IInputFormatStrategy CreateInputStrategy(string format)
+        public static IInputFormatStrategy CreateInputStrategy(string format, FormatConfig? config = null)
         {
-            if (InputStrategies.TryGetValue(format, out var factory))
+            var normalizedFormat = format.ToLowerInvariant();
+
+            if (!InputStrategies.TryGetValue(normalizedFormat, out var strategyType))
             {
-                return factory();
+                throw new NotSupportedException($"Input format '{format}' is not supported");
             }
-            throw new ArgumentException($"Unsupported input format: {format}. Supported formats: {string.Join(", ", InputStrategies.Keys)}");
+
+            var strategy = (IInputFormatStrategy)Activator.CreateInstance(strategyType)!;
+
+            if (config != null)
+            {
+                strategy.Configure(config);
+            }
+
+            return strategy;
         }
 
-        public static IOutputFormatStrategy CreateOutputStrategy(string format)
+        public static IOutputFormatStrategy CreateOutputStrategy(string format, FormatConfig? config = null)
         {
-            if (OutputStrategies.TryGetValue(format, out var factory))
+            var normalizedFormat = format.ToLowerInvariant();
+
+            if (!OutputStrategies.TryGetValue(normalizedFormat, out var strategyType))
             {
-                return factory();
+                throw new NotSupportedException($"Output format '{format}' is not supported");
             }
-            throw new ArgumentException($"Unsupported output format: {format}. Supported formats: {string.Join(", ", OutputStrategies.Keys)}");
+
+            var strategy = (IOutputFormatStrategy)Activator.CreateInstance(strategyType)!;
+
+            if (config != null)
+            {
+                strategy.Configure(config);
+            }
+
+            return strategy;
         }
 
         public static IEnumerable<string> GetSupportedFormats()

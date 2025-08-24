@@ -1,225 +1,317 @@
-﻿namespace FormatConverter
+﻿using CommandLine;
+using System.IO.Compression;
+
+namespace FormatConverter
 {
     class Program
     {
-        public const string VERSION = "1.0.2";
-        public static string[] binaryFormats = ["messagepack", "cbor", "protobuf", "bxml"];
+        public const string VERSION = "1.2.0";
+        public static readonly string[] BinaryFormats = { "messagepack", "cbor", "protobuf", "bxml" };
 
-        static void Main(string[] args)
+        static int Main(string[] args)
         {
-            if (args.Any(arg => arg == "--help" || arg == "--h"))
-            {
-                ShowUsage();
-                return;
-            }
+            return Parser.Default.ParseArguments<Options>(args)
+                .MapResult(Run, HandleParseErrors);
+        }
 
-            if (args.Any(arg => arg == "--version" || arg == "--v"))
-            {
-                Console.WriteLine($"FormatConverter CLI v{VERSION}");
-                return;
-            }
-            bool forceOverwrite = args.Any(arg => arg == "--force" || arg == "--f");
-            bool verbose = args.Contains("--verbose");
+        internal static int HandleParseErrors(IEnumerable<Error> errs)
+        {
+            if (errs.Any(x => x is HelpRequestedError || x is VersionRequestedError))
+                return -1;
 
-            var mainArgs = args.Where(a => !a.StartsWith("--") && !a.StartsWith("-")).ToArray();
+            return -2;
+        }
 
-            if (mainArgs.Length < 3)
-            {
-                ShowUsage();
-                return;
-            }
-
-            string inputFile = mainArgs[0];
-            string inputFormat = mainArgs[1].ToLower();
-            string outputFormat = mainArgs[2].ToLower();
-
-            if (!File.Exists(inputFile))
-            {
-                Console.WriteLine("Error: Input file not found.");
-                return;
-            }
-
-            if (string.IsNullOrEmpty(inputFormat) || string.IsNullOrEmpty(outputFormat))
-            {
-                Console.WriteLine("Error: Input and output formats cannot be empty.");
-                return;
-            }
-
-            var supportedFormats = FormatStrategyFactory.GetSupportedFormats();
-
-            if (!supportedFormats.Contains(inputFormat)
-                || !supportedFormats.Contains(outputFormat))
-            {
-                Console.WriteLine($"Error: Unsupported format. Supported formats: {string.Join(", ", supportedFormats)}");
-                return;
-            }
-
-            if (inputFormat != "json" && outputFormat != "json")
-            {
-                Console.WriteLine("Unsupported conversion: Only conversions involving JSON are allowed.");
-                Console.WriteLine("Allowed: JSON → other format OR other format → JSON");
-                Console.WriteLine("Not allowed: e.g., XML → YAML, CBOR → Protobuf, etc.");
-                return;
-            }
-
-            if (inputFormat == outputFormat)
-            {
-                Console.WriteLine("Warning: Input and output formats are the same. No conversion needed.");
-                return;
-            }
-
+        internal static int Run(Options opts)
+        {
             try
             {
-                if (verbose) Console.WriteLine($"Reading input file: {inputFile}");
-                string inputText = ReadInputFile(inputFile, inputFormat);
-
-                if (verbose)
+                if (opts.Version)
                 {
-                    Console.WriteLine($"Converting from {inputFormat} to {outputFormat}...");
-                    Console.WriteLine($"Creating input strategy for {inputFormat}...");
+                    ShowVersionInfo();
+                    return 0;
                 }
 
-                var inputStrategy = FormatStrategyFactory.CreateInputStrategy(inputFormat);
-                var outputStrategy = FormatStrategyFactory.CreateOutputStrategy(outputFormat);
-
-                if (verbose) Console.WriteLine("Parsing input data...");
-                var parsedData = inputStrategy.Parse(inputText);
-
-                if (verbose) Console.WriteLine($"Serializing to {outputFormat}...");
-                string result = outputStrategy.Serialize(parsedData);
-
-                string outputFile = GenerateOutputFileName(inputFile, outputFormat);
-
-                if (File.Exists(outputFile) && !forceOverwrite)
+                if (opts.ListFormats)
                 {
-                    Console.WriteLine($"Error: Output file '{outputFile}' already exists. Use --force to overwrite.");
-                    return;
+                    ShowSupportedFormats();
+                    return 0;
                 }
 
-                if (verbose) Console.WriteLine($"Writing output to: {outputFile}");
-                WriteOutputFile(outputFile, result, outputFormat);
+                var formatConfig = FormatConfig.FromOptions(opts);
+                formatConfig.ValidateConfiguration();
 
-                Console.WriteLine($"Success: Converted {inputFormat.ToUpper()} to {outputFormat.ToUpper()}.");
-                Console.WriteLine($"Output: {outputFile}");
-
-                if (verbose)
+                if (opts.Verbose)
                 {
-                    Console.WriteLine($"Input strategy used: {inputStrategy.GetType().Name}");
-                    Console.WriteLine($"Output strategy used: {outputStrategy.GetType().Name}");
+                    WriteInfo("Configuration:");
+                    Console.WriteLine(formatConfig);
                 }
+
+                return ProcessConversion(opts, formatConfig);
             }
             catch (ArgumentException ex)
             {
-                Console.WriteLine($"Configuration error: {ex.Message}");
+                WriteError($"Configuration error: {ex.Message}");
+                return 3;
             }
-            catch (FormatException ex)
+            catch (Exception ex)
             {
-                Console.WriteLine($"Format error: {ex.Message}");
+                WriteError($"Unexpected error: {ex.Message}");
+#if DEBUG
+                Console.Error.WriteLine(ex);
+#endif
+                return 4;
+            }
+        }
+
+        internal static int ProcessConversion(Options opts, FormatConfig config)
+        {
+            var supportedFormats = FormatStrategyFactory.GetSupportedFormats();
+
+            if (!supportedFormats.Contains(opts.InputFormat.ToLower()) ||
+                !supportedFormats.Contains(opts.OutputFormat.ToLower()))
+            {
+                WriteError($"Unsupported format. Supported formats: {string.Join(", ", supportedFormats)}");
+                return 3;
+            }
+
+            if (opts.InputFormat.Equals(opts.OutputFormat, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!HasFormatSpecificOptions(opts))
+                {
+                    WriteWarning("Input and output formats are the same with no format-specific options. No conversion needed.");
+                    return 0;
+                }
+                WriteInfo("Same format conversion with format-specific options applied.");
+            }
+
+            try
+            {
+                if (opts.Verbose) WriteInfo($"Reading input from {(opts.InputFile == "-" ? "stdin" : opts.InputFile)}...");
+
+                var inputText = ReadInput(opts.InputFile, opts.InputFormat, config);
+
+                if (opts.Verbose) WriteInfo($"Parsing {opts.InputFormat}...");
+                var inputStrategy = FormatStrategyFactory.CreateInputStrategy(opts.InputFormat, config);
+                var outputStrategy = FormatStrategyFactory.CreateOutputStrategy(opts.OutputFormat, config);
+
+                var parsedData = inputStrategy.Parse(inputText);
+
+                if (opts.Verbose) WriteInfo($"Serializing to {opts.OutputFormat}...");
+                string result = outputStrategy.Serialize(parsedData);
+
+                if (!string.IsNullOrEmpty(config.Compression))
+                {
+                    if (opts.Verbose) WriteInfo($"Applying {config.Compression} compression...");
+                    result = CompressString(result, config);
+                }
+
+                return WriteResult(opts, config, result);
             }
             catch (IOException ex)
             {
-                Console.WriteLine($"File I/O error: {ex.Message}");
+                WriteError($"File I/O error: {ex.Message}");
+                return 2;
             }
-            catch (UnauthorizedAccessException ex)
+            catch (FormatException ex)
             {
-                Console.WriteLine($"Access error: {ex.Message}");
+                WriteError($"Format error: {ex.Message}");
+                return 3;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Unexpected error: {ex.Message}");
-#if DEBUG
-                Console.WriteLine($"Stack trace: {ex.StackTrace}");
-#endif
+                if (config.IgnoreErrors)
+                {
+                    WriteWarning($"Non-critical error ignored: {ex.Message}");
+                    return 0;
+                }
+                WriteError($"Processing error: {ex.Message}");
+                return 4;
             }
         }
 
-        static void ShowUsage()
+        internal static int WriteResult(Options opts, FormatConfig config, string result)
         {
-            Console.WriteLine("Format Converter - Convert between different data formats");
-            Console.WriteLine();
-            Console.WriteLine("Usage: FormatConverter <input-file> <input-format> <output-format> [--force]");
-            Console.WriteLine();
+            if (opts.InputFile == "-")
+            {
+                if (opts.Verbose) WriteInfo("Writing result to stdout...");
+                WriteToStream(Console.OpenStandardOutput(), result, config);
+                return 0;
+            }
 
-            var supportedFormats = FormatStrategyFactory.GetSupportedFormats();
-            Console.WriteLine($"Supported formats: {string.Join(", ", supportedFormats)}");
-            Console.WriteLine();
-            Console.WriteLine("Options:");
-            Console.WriteLine("  --force, --f       Overwrite output file if it already exists");
-            Console.WriteLine("  --verbose          Enable detailed output");
-            Console.WriteLine("  --help, -h         Show this help message");
-            Console.WriteLine("  --version, -v      Show version info");
-            Console.WriteLine();
-            Console.WriteLine("Examples:");
-            Console.WriteLine("  FormatConverter data.json json yaml");
-            Console.WriteLine("  FormatConverter config.xml xml json --force");
-            Console.WriteLine("  FormatConverter data.msgpack messagepack json --verbose");
-            Console.WriteLine();
-            Console.WriteLine("Note: Currently only conversions involving JSON are supported.");
-            Console.WriteLine("Valid: JSON ↔ other format | Invalid: format1 → format2 (both non-JSON)");
+            string outputFile = opts.OutputFile ?? GenerateOutputFileName(opts.InputFile, opts.OutputFormat);
+
+            if (File.Exists(outputFile) && !opts.Force)
+            {
+                WriteError($"Output file '{outputFile}' already exists. Use --force to overwrite.");
+                return 2;
+            }
+
+            if (opts.Verbose) WriteInfo($"Writing output to {outputFile}");
+            WriteOutput(outputFile, result, opts.OutputFormat, config);
+
+            WriteSuccess($"Success: {opts.InputFormat.ToUpper()} → {opts.OutputFormat.ToUpper()}");
+            Console.WriteLine($"Output: {outputFile}");
+
+            if (opts.Verbose)
+            {
+                var inputSize = GetFileSize(opts.InputFile);
+                var outputSize = GetFileSize(outputFile);
+                var ratio = inputSize > 0 ? (double)outputSize / inputSize : 1.0;
+                WriteInfo($"Size: {FormatBytes(inputSize)} → {FormatBytes(outputSize)} ({ratio:P1})");
+            }
+
+            return 0;
         }
 
-        static string ReadInputFile(string filePath, string format)
+        internal static bool HasFormatSpecificOptions(Options opts) =>
+            opts.IndentSize.HasValue ||
+            opts.Minify ||
+            !opts.PrettyPrint ||
+            opts.NoMetadata ||
+            opts.SortKeys ||
+            opts.JsonEscapeUnicode ||
+            opts.JsonTrailingCommas ||
+            !string.IsNullOrEmpty(opts.XmlRootElement) ||
+            opts.YamlFlowStyle ||
+            !string.IsNullOrEmpty(opts.Compression);
+
+        internal static string CompressString(string input, FormatConfig config)
         {
-            try
+            var bytes = config.Encoding.GetBytes(input);
+
+            using var output = new MemoryStream();
+            using (Stream compressionStream = config.Compression?.ToLower() switch
             {
-                if (binaryFormats.Contains(format.ToLower()))
-                {
-                    byte[] bytes = File.ReadAllBytes(filePath);
-                    return Convert.ToBase64String(bytes);
-                }
-                else
-                {
-                    return File.ReadAllText(filePath);
-                }
-            }
-            catch (Exception ex)
+                "gzip" => new GZipStream(output, CompressionLevel.Optimal),
+                "deflate" => new DeflateStream(output, CompressionLevel.Optimal),
+                _ => throw new NotSupportedException($"Compression format not supported: {config.Compression}")
+            })
             {
-                throw new IOException($"Failed to read input file '{filePath}': {ex.Message}", ex);
+                compressionStream.Write(bytes, 0, bytes.Length);
             }
+
+            return Convert.ToBase64String(output.ToArray());
         }
 
-        static void WriteOutputFile(string filePath, string content, string format)
+        internal static string ReadInput(string path, string format, FormatConfig config)
         {
-            try
+            if (path == "-")
             {
-                if (binaryFormats.Contains(format.ToLower()))
-                {
-                    byte[] bytes = Convert.FromBase64String(content);
-                    File.WriteAllBytes(filePath, bytes);
-                }
-                else
-                {
-                    File.WriteAllText(filePath, content);
-                }
+                using var reader = new StreamReader(Console.OpenStandardInput(), config.Encoding);
+                return reader.ReadToEnd();
             }
-            catch (Exception ex)
-            {
-                throw new IOException($"Failed to write output file '{filePath}': {ex.Message}", ex);
-            }
+
+            if (!File.Exists(path))
+                throw new FileNotFoundException($"Input file '{path}' not found.");
+
+            return BinaryFormats.Contains(format.ToLower())
+                ? Convert.ToBase64String(File.ReadAllBytes(path))
+                : File.ReadAllText(path, config.Encoding);
         }
 
-        static string GenerateOutputFileName(string inputFile, string outputFormat)
+        internal static void WriteOutput(string path, string content, string format, FormatConfig config)
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            if (BinaryFormats.Contains(format.ToLower()))
+                File.WriteAllBytes(path, Convert.FromBase64String(content));
+            else
+                File.WriteAllText(path, content, config.Encoding);
+        }
+
+        internal static void WriteToStream(Stream stream, string content, FormatConfig config)
+        {
+            using var writer = new StreamWriter(stream, config.Encoding);
+            writer.Write(content);
+        }
+
+        internal static string GenerateOutputFileName(string inputFile, string outputFormat)
         {
             string directory = Path.GetDirectoryName(inputFile) ?? "";
             string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(inputFile);
             string extension = GetFileExtension(outputFormat);
-
             return Path.Combine(directory, fileNameWithoutExtension + extension);
         }
 
-        static string GetFileExtension(string format)
+        internal static string GetFileExtension(string format) => format.ToLower() switch
         {
-            return format switch
+            "json" => ".json",
+            "xml" => ".xml",
+            "yaml" => ".yaml",
+            "messagepack" => ".msgpack",
+            "cbor" => ".cbor",
+            "protobuf" => ".pb",
+            "bxml" => ".bxml",
+            _ => ".out"
+        };
+
+        internal static long GetFileSize(string path) =>
+            File.Exists(path) ? new FileInfo(path).Length : 0;
+
+        internal static string FormatBytes(long bytes)
+        {
+            string[] sizes = { "B", "KB", "MB", "GB" };
+            double len = bytes;
+            int order = 0;
+            while (len >= 1024 && order < sizes.Length - 1)
             {
-                "json" => ".json",
-                "xml" => ".xml",
-                "yaml" => ".yaml",
-                "messagepack" => ".msgpack",
-                "cbor" => ".cbor",
-                "protobuf" => ".pb",
-                "bxml" => ".bxml",
-                _ => ".out"
-            };
+                order++;
+                len /= 1024;
+            }
+            return $"{len:0.##} {sizes[order]}";
         }
+
+        internal static void ShowVersionInfo()
+        {
+            WriteInfo($"FormatConverter CLI v{VERSION}");
+
+            WriteInfo("Usage examples:");
+            WriteInfo("  FormatConverter -i data.json --input-format json --output-format xml --pretty");
+            WriteInfo("  FormatConverter -i data.xml --input-format xml --output-format yaml --minify");
+            WriteInfo("  FormatConverter -i data.json --input-format json --output-format json --indent 4 --sort-keys");
+        }
+
+        internal static void ShowSupportedFormats()
+        {
+            WriteInfo("Supported formats:");
+            foreach (var f in FormatStrategyFactory.GetSupportedFormats())
+                Console.WriteLine($"  - {f}");
+
+            WriteInfo("\nFormat-specific options:");
+            WriteInfo("JSON: --json-escape-unicode, --json-trailing-commas, --json-single-quotes");
+            WriteInfo("XML:  --xml-root, --xml-namespace, --xml-attributes, --xml-cdata");
+            WriteInfo("YAML: --yaml-flow-style, --yaml-explicit-start, --yaml-canonical");
+            WriteInfo("\nGeneral options:");
+            WriteInfo("--indent <size>     Set indentation (0 for tabs)");
+            WriteInfo("--minify            Remove unnecessary whitespace");
+            WriteInfo("--sort-keys         Sort object keys alphabetically");
+            WriteInfo("--compress <type>   Compress output (gzip, deflate)");
+            WriteInfo("--encoding <enc>    Set file encoding (utf-8, utf-16, etc.)");
+        }
+
+        #region Console Helpers
+        internal static void WriteColored(ConsoleColor color, string prefix, string msg, bool stderr = false)
+        {
+            var original = Console.ForegroundColor;
+            Console.ForegroundColor = color;
+
+            if (stderr)
+                Console.Error.WriteLine($"{prefix}{msg}");
+            else
+                Console.WriteLine($"{prefix}{msg}");
+
+            Console.ForegroundColor = original;
+        }
+
+        internal static void WriteError(string msg) => WriteColored(ConsoleColor.Red, "ERROR: ", msg, true);
+        internal static void WriteWarning(string msg) => WriteColored(ConsoleColor.Yellow, "WARNING: ", msg);
+        internal static void WriteInfo(string msg) => WriteColored(ConsoleColor.Cyan, "INFO: ", msg);
+        internal static void WriteSuccess(string msg) => WriteColored(ConsoleColor.Green, "SUCCESS: ", msg);
+        #endregion
     }
 }
