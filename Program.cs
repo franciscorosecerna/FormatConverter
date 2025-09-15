@@ -185,6 +185,7 @@ namespace FormatConverter
             {
                 "gzip" => new GZipStream(output, CompressionLevel.Optimal),
                 "deflate" => new DeflateStream(output, CompressionLevel.Optimal),
+                "brotli" => new BrotliStream(output, CompressionLevel.Optimal),
                 _ => throw new NotSupportedException($"Compression format not supported: {config.Compression}")
             })
             {
