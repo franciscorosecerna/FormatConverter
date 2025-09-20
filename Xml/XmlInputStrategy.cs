@@ -106,8 +106,6 @@ namespace FormatConverter.Xml
 
         private static object ConvertValue(string value)
         {
-            if (string.IsNullOrEmpty(value)) return value;
-
             if (bool.TryParse(value, out bool boolVal)) return boolVal;
             if (int.TryParse(value, out int intVal)) return intVal;
             if (double.TryParse(value, out double doubleVal)) return doubleVal;

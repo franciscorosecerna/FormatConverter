@@ -50,10 +50,13 @@ namespace FormatConverter.Xml
                 };
 
                 using var stringWriter = new StringWriter();
-                using var xmlWriter = XmlWriter.Create(stringWriter, settings);
+                using (var xmlWriter = XmlWriter.Create(stringWriter, settings))
+                {
+                    doc.Save(xmlWriter);
+                    xmlWriter.Flush();
+                }
+                return stringWriter.ToString();                
 
-                doc.Save(xmlWriter);
-                return stringWriter.ToString();
             }
             catch (Exception ex)
             {
@@ -65,31 +68,56 @@ namespace FormatConverter.Xml
         {
             if (obj == null) return;
 
-            switch (obj)
+            if (obj is JValue jValue)
             {
-                case Dictionary<string, object> dict:
-                    ConvertDictionaryToXml(dict, parent);
-                    break;
+                var textValue = FormatValue(jValue.Value);
+                if (Config.XmlUseCData && ContainsSpecialCharacters(textValue))
+                    parent.Add(new XCData(textValue));
+                else
+                    parent.Value = textValue;
+            }
+            else if (obj is JObject jObject)
+            {
+                foreach (var property in jObject.Properties())
+                {
+                    var element = new XElement(SanitizeElementName(property.Name));
+                    ConvertObjectToXElement(property.Value, element);
+                    parent.Add(element);
+                }
+            }
+            else if (obj is JArray jArray)
+            {
+                foreach (var item in jArray)
+                {
+                    var itemElement = new XElement("item");
+                    ConvertObjectToXElement(item, itemElement);
+                    parent.Add(itemElement);
+                }
+            }
+            else
+            {
+                switch (obj)
+                {
+                    case Dictionary<string, object> dict:
+                        ConvertDictionaryToXml(dict, parent);
+                        break;
 
-                case List<object> list:
-                    ConvertListToXml(list, parent);
-                    break;
+                    case List<object> list:
+                        ConvertListToXml(list, parent);
+                        break;
 
-                case Array array:
-                    ConvertArrayToXml(array, parent);
-                    break;
+                    case Array array:
+                        ConvertArrayToXml(array, parent);
+                        break;
 
-                default:
-                    var textValue = FormatValue(obj);
-                    if (Config.XmlUseCData && ContainsSpecialCharacters(textValue))
-                    {
-                        parent.Add(new XCData(textValue));
-                    }
-                    else
-                    {
-                        parent.Value = textValue;
-                    }
-                    break;
+                    default:
+                        var textValue = FormatValue(obj);
+                        if (Config.XmlUseCData && ContainsSpecialCharacters(textValue))
+                            parent.Add(new XCData(textValue));
+                        else
+                            parent.Value = textValue;
+                        break;
+                }
             }
         }
 
