@@ -27,6 +27,9 @@ namespace FormatConverter
         public bool YamlExplicitEnd { get; set; }
         public bool YamlQuoteStrings { get; set; }
         public bool YamlCanonical { get; set; }
+        public bool TomlArrayOfTables { get; set; }
+        public bool TomlMultilineStrings { get; set; }
+        public bool TomlStrictTypes { get; set; }
         public string? Compression { get; set; }
         public int CompressionLevel { get; set; } = 6;
         public string? SchemaFile { get; set; }
@@ -66,6 +69,9 @@ namespace FormatConverter
                 YamlExplicitEnd = options.YamlExplicitEnd,
                 YamlQuoteStrings = options.YamlQuoteStrings,
                 YamlCanonical = options.YamlCanonical,
+                TomlArrayOfTables = options.TomlArrayOfTables,
+                TomlMultilineStrings = options.TomlMultilineStrings,
+                TomlStrictTypes = options.TomlStrictTypes,
                 Compression = options.Compression,
                 CompressionLevel = options.CompressionLevel,
                 SchemaFile = options.SchemaFile,
@@ -103,11 +109,6 @@ namespace FormatConverter
             return new string(' ', IndentSize.Value);
         }
 
-        public CultureInfo GetCulture()
-        {
-            return CultureInfo.InvariantCulture;
-        }
-
         public TimeZoneInfo GetTimeZone()
         {
             if (string.IsNullOrEmpty(Timezone))
@@ -130,6 +131,8 @@ namespace FormatConverter
             {
                 Console.WriteLine("Warning: Both --minify and --pretty specified. Minify takes precedence.");
             }
+
+            GetTimeZone();
 
             if (IndentSize < 0)
             {

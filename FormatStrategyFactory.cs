@@ -4,6 +4,7 @@ using FormatConverter.Interfaces;
 using FormatConverter.Json;
 using FormatConverter.MessagePack;
 using FormatConverter.Protobuf;
+using FormatConverter.Toml;
 using FormatConverter.Xml;
 using FormatConverter.Yaml;
 
@@ -19,7 +20,8 @@ namespace FormatConverter
             { "messagepack", typeof(MessagePackInputStrategy) },
             { "cbor", typeof(CborInputStrategy) },
             { "protobuf", typeof(ProtobufInputStrategy) },
-            { "bxml", typeof(BxmlInputStrategy) }
+            { "bxml", typeof(BxmlInputStrategy) },
+            { "toml", typeof (TomlInputStrategy) },
         };
 
         private static readonly Dictionary<string, Type> OutputStrategies = new()
@@ -30,7 +32,8 @@ namespace FormatConverter
             { "messagepack", typeof(MessagePackOutputStrategy) },
             { "cbor", typeof(CborOutputStrategy) },
             { "protobuf", typeof(ProtobufOutputStrategy) },
-            { "bxml", typeof(BxmlOutputStrategy) }
+            { "bxml", typeof(BxmlOutputStrategy) },
+            { "toml", typeof(TomlOutputStrategy) },
         };
 
         public static IInputFormatStrategy CreateInputStrategy(string format, FormatConfig? config = null)

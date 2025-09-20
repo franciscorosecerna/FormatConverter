@@ -5,7 +5,7 @@ namespace FormatConverter
 {
     class Program
     {
-        public const string VERSION = "1.2.0";
+        public const string VERSION = "1.3.1";
         public static readonly string[] BinaryFormats = { "messagepack", "cbor", "protobuf", "bxml" };
 
         static int Main(string[] args)
@@ -186,7 +186,7 @@ namespace FormatConverter
                 "gzip" => new GZipStream(output, CompressionLevel.Optimal),
                 "deflate" => new DeflateStream(output, CompressionLevel.Optimal),
                 "brotli" => new BrotliStream(output, CompressionLevel.Optimal),
-                _ => throw new NotSupportedException($"Compression format not supported: {config.Compression}")
+                 _ => throw new NotSupportedException($"Compression format not supported: {config.Compression}")
             })
             {
                 compressionStream.Write(bytes, 0, bytes.Length);
@@ -248,6 +248,7 @@ namespace FormatConverter
             "cbor" => ".cbor",
             "protobuf" => ".pb",
             "bxml" => ".bxml",
+            "toml" => ".toml",
             _ => ".out"
         };
 
@@ -287,6 +288,7 @@ namespace FormatConverter
             WriteInfo("JSON: --json-escape-unicode, --json-trailing-commas, --json-single-quotes");
             WriteInfo("XML:  --xml-root, --xml-namespace, --xml-attributes, --xml-cdata");
             WriteInfo("YAML: --yaml-flow-style, --yaml-explicit-start, --yaml-canonical");
+            WriteInfo("TOML: --toml-array-of-tables, --toml-multiline-strings, --toml-strict-types");
             WriteInfo("\nGeneral options:");
             WriteInfo("--indent <size>     Set indentation (0 for tabs)");
             WriteInfo("--minify            Remove unnecessary whitespace");

@@ -1,17 +1,19 @@
-{
+﻿{
   "persona": {
-    "edad": 29,
-    "email": "ana@example.com",
     "activo": true,
-    "nombre": "Ana",
     "direccion": {
       "calle": "Av. Siempre Viva",
       "ciudad": "Springfield",
       "numero": 742
     },
-    "telefonos": [
-      "123-4567",
-      "987-6543"
-    ]
+    "edad": 29,
+    "email": "ana@example.com",
+    "nombre": "Ana",
+    "telefonos": {
+      "item": [
+        "123-4567",
+        "987-6543"
+      ]
+    }
   }
 }

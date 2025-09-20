@@ -94,6 +94,15 @@ namespace FormatConverter
         [Option("yaml-canonical", HelpText = "Use canonical YAML format")]
         public bool YamlCanonical { get; set; }
 
+        [Option("toml-array-of-tables", Default = true, HelpText = "Convert object arrays to TOML array of tables format ([[table]])")]
+        public bool TomlArrayOfTables { get; set; } = true;
+
+        [Option("toml-multiline-strings", Default = false, HelpText = "Use multiline string format (\"\"\"...\"\"\") for long strings")]
+        public bool TomlMultilineStrings { get; set; } = false;
+
+        [Option("toml-strict-types", Default = false, HelpText = "Enforce strict type conversion (fail if types cannot be represented in TOML)")]
+        public bool TomlStrictTypes { get; set; } = false;
+
         [Option("compress", MetaValue = "TYPE", HelpText = "Compress output using specified algorithm (gzip, deflate, brotli)")]
         public string? Compression { get; set; }
 

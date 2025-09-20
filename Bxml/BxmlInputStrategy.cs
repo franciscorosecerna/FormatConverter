@@ -46,7 +46,7 @@ namespace FormatConverter.Bxml
 
                 return result;
             }
-            catch (Exception ex) when (!(ex is FormatException))
+            catch (Exception ex) when (ex is not FormatException)
             {
                 if (Config.IgnoreErrors)
                 {
