@@ -20,6 +20,7 @@ This tool converts between the following data formats:
 | **CBOR**     | `.cbor`     |
 | **Protobuf**   | `.pb`  |
 | **BXML**   | `.bxml`  |
+| **TOML**   | `.toml`   |
 
 ---
 
@@ -70,6 +71,11 @@ If you omit `-o <output-file>`, the tool auto-generates one with the correct ext
 - `--yaml-explicit-start` / `--yaml-explicit-end`
 - `--yaml-quote-strings`
 - `--yaml-canonical`
+#### TOML Specific
+
+- `toml-array-of-tables` (Default: true)
+- `toml-multiline-strings` (Default: false)
+- `toml-strict-types` (Default: false)
 #### Other
 
 - `--compress <gzip|deflate|brotli>` → compress output (Base64 encoded)
