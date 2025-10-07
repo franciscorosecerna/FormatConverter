@@ -17,5 +17,7 @@ namespace FormatConverter.Interfaces
         }
 
         public abstract JToken Parse(string input);
+
+        public abstract IEnumerable<JToken> ParseStream(string input);
     }
 }

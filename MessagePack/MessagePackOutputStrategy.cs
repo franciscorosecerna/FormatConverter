@@ -2,6 +2,7 @@
 using Newtonsoft.Json.Linq;
 using MessagePack;
 using MessagePack.Resolvers;
+using System.Text;
 
 namespace FormatConverter.MessagePack
 {
@@ -9,12 +10,162 @@ namespace FormatConverter.MessagePack
     {
         public override string Serialize(JToken data)
         {
+            if (Config.UseStreaming)
+            {
+                return string.Join("", SerializeStream([data]));
+            }
+
+            return SerializeRegular(data);
+        }
+
+        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
+        {
+            if (!Config.UseStreaming)
+            {
+                yield return Serialize(new JArray(data));
+                yield break;
+            }
+
+            foreach (var token in data)
+            {
+                foreach (var chunk in StreamToken(token))
+                {
+                    yield return chunk;
+                }
+            }
+        }
+
+        private IEnumerable<string> StreamToken(JToken token)
+        {
+            var processed = ProcessDataBeforeSerialization(token);
+
+            return processed.Type switch
+            {
+                JTokenType.Array => StreamArray((JArray)processed),
+                JTokenType.Object => StreamObject((JObject)processed),
+                _ => StreamSingle(processed)
+            };
+        }
+
+        private IEnumerable<string> StreamArray(JArray array)
+        {
+            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
+            var buffer = new List<JToken>();
+            var currentBufferSize = 0;
+            var totalProcessed = 0;
+            var itemCount = array.Count;
+
+            foreach (var item in array)
+            {
+                var serializedItem = SerializeTokenToBytes(item);
+                var itemSizeInBytes = serializedItem.Length;
+
+                if (buffer.Count > 0 && currentBufferSize + itemSizeInBytes > bufferSize)
+                {
+                    yield return SerializeChunk(buffer);
+                    buffer.Clear();
+                    currentBufferSize = 0;
+
+                    if (itemCount > 0 && totalProcessed % Math.Max(1, itemCount / 10) == 0)
+                    {
+                        var progress = (double)totalProcessed / itemCount * 100;
+                        Console.WriteLine($"Array serialization progress: {progress:F1}%");
+                    }
+                }
+
+                buffer.Add(item);
+                currentBufferSize += itemSizeInBytes;
+                totalProcessed++;
+            }
+
+            if (buffer.Count > 0)
+            {
+                yield return SerializeChunk(buffer);
+            }
+        }
+
+        private IEnumerable<string> StreamObject(JObject obj)
+        {
+            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
+            var properties = Config.SortKeys
+                ? obj.Properties().OrderBy(p => p.Name).ToList()
+                : obj.Properties().ToList();
+
+            var buffer = new Dictionary<string, JToken>();
+            var currentBufferSize = 0;
+            var totalProcessed = 0;
+            var propertyCount = properties.Count;
+
+            foreach (var property in properties)
+            {
+                if (Config.NoMetadata && IsMetadataField(property.Name))
+                    continue;
+
+                var serializedValue = SerializeTokenToBytes(property.Value);
+                var propertySizeInBytes = Encoding.UTF8.GetByteCount(property.Name) + serializedValue.Length;
+
+                if (buffer.Count > 0 && currentBufferSize + propertySizeInBytes > bufferSize)
+                {
+                    yield return SerializeChunk(new JObject(buffer.Select(kvp =>
+                        new JProperty(kvp.Key, kvp.Value))));
+                    buffer.Clear();
+                    currentBufferSize = 0;
+
+                    if (propertyCount > 0 && totalProcessed % Math.Max(1, propertyCount / 10) == 0)
+                    {
+                        var progress = (double)totalProcessed / propertyCount * 100;
+                        Console.WriteLine($"Object serialization progress: {progress:F1}%");
+                    }
+                }
+
+                buffer[property.Name] = property.Value;
+                currentBufferSize += propertySizeInBytes;
+                totalProcessed++;
+            }
+
+            if (buffer.Count > 0)
+            {
+                yield return SerializeChunk(new JObject(buffer.Select(kvp =>
+                    new JProperty(kvp.Key, kvp.Value))));
+            }
+        }
+
+        private IEnumerable<string> StreamSingle(JToken token)
+        {
+            IEnumerable<string> Iterator()
+            {
+                yield return SerializeChunk(token);
+            }
+
             try
             {
-                var obj = ConvertJTokenToObject(data);
-
-                if (obj == null && data.Type != JTokenType.Null)
+                return Iterator();
+            }
+            catch (Exception ex)
+            {
+                if (Config.IgnoreErrors)
                 {
+                    return [CreateErrorOutput(ex.Message)];
+                }
+                else
+                {
+                    throw new FormatException($"Error serializing single token: {ex.Message}", ex);
+                }
+            }
+        }
+
+        private string SerializeChunk(JToken token)
+        {
+            try
+            {
+                var obj = ConvertJTokenToObject(token);
+
+                if (obj == null && token.Type != JTokenType.Null)
+                {
+                    if (Config.IgnoreErrors)
+                    {
+                        return CreateErrorOutput("Failed to convert token to object");
+                    }
                     throw new FormatException("Failed to convert JSON to object for MessagePack serialization");
                 }
 
@@ -23,21 +174,70 @@ namespace FormatConverter.MessagePack
 
                 return FormatOutput(bytes);
             }
-            catch (MessagePackSerializationException ex)
+            catch (Exception ex) when (ex is not FormatException)
             {
-                throw new FormatException($"MessagePack serialization failed: {ex.Message}", ex);
-            }
-            catch (Exception ex) when (!(ex is FormatException))
-            {
+                if (Config.IgnoreErrors)
+                {
+                    return CreateErrorOutput(ex.Message);
+                }
                 throw new FormatException($"MessagePack serialization error: {ex.Message}", ex);
             }
         }
 
+        private string SerializeChunk(List<JToken> items)
+        {
+            var array = new JArray(items);
+            return SerializeChunk(array);
+        }
+
+        private string SerializeRegular(JToken data)
+        {
+            var processed = ProcessDataBeforeSerialization(data);
+            return SerializeChunk(processed);
+        }
+
+        private byte[] SerializeTokenToBytes(JToken token)
+        {
+            var obj = ConvertJTokenToObject(token);
+            var options = GetMessagePackOptions();
+            return MessagePackSerializer.Serialize(obj, options);
+        }
+
+        private JToken ProcessDataBeforeSerialization(JToken data)
+        {
+            if (Config.SortKeys && data is JObject)
+                data = SortKeysRecursively(data);
+
+            if (Config.ArrayWrap && data.Type != JTokenType.Array)
+                return new JArray(data);
+
+            return data;
+        }
+
+        private JToken SortKeysRecursively(JToken token)
+        {
+            return token.Type switch
+            {
+                JTokenType.Object => SortJObject((JObject)token),
+                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
+                _ => token
+            };
+        }
+
+        private JObject SortJObject(JObject obj)
+        {
+            var sorted = new JObject();
+            foreach (var property in obj.Properties().OrderBy(p => p.Name))
+            {
+                sorted[property.Name] = SortKeysRecursively(property.Value);
+            }
+            return sorted;
+        }
+
         private MessagePackSerializerOptions GetMessagePackOptions()
         {
-            var options = MessagePackSerializerOptions.Standard;
-
-            options = options.WithResolver(ContractlessStandardResolver.Instance);
+            var options = MessagePackSerializerOptions.Standard
+                .WithResolver(ContractlessStandardResolver.Instance);
 
             if (!string.IsNullOrEmpty(Config.Compression))
             {
@@ -146,7 +346,7 @@ namespace FormatConverter.MessagePack
                 {
                     return Convert.FromBase64String(value);
                 }
-                catch { }
+                finally { }
             }
             return value;
         }
@@ -223,7 +423,7 @@ namespace FormatConverter.MessagePack
             {
                 "hex" or "hexadecimal" => FormatAsHex(bytes),
                 "binary" => FormatAsBinary(bytes),
-                "raw" => System.Text.Encoding.UTF8.GetString(bytes),
+                "raw" => Encoding.UTF8.GetString(bytes),
                 _ => Convert.ToBase64String(bytes)
             };
         }
@@ -250,6 +450,18 @@ namespace FormatConverter.MessagePack
             }
 
             return string.Concat(bytes.Select(b => Convert.ToString(b, 2).PadLeft(8, '0')));
+        }
+
+        private string CreateErrorOutput(string errorMessage)
+        {
+            var errorObj = new JObject
+            {
+                ["error"] = errorMessage,
+                ["timestamp"] = DateTime.UtcNow.ToString("O")
+            };
+
+            var errorBytes = Encoding.UTF8.GetBytes(errorObj.ToString(Newtonsoft.Json.Formatting.None));
+            return FormatOutput(errorBytes);
         }
     }
 }

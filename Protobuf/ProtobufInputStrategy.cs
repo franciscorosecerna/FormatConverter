@@ -9,61 +9,463 @@ namespace FormatConverter.Protobuf
     {
         public override JToken Parse(string input)
         {
+            if (Config.UseStreaming)
+            {
+                var firstToken = ParseStream(input).FirstOrDefault();
+                return firstToken ?? new JObject();
+            }
+
             try
             {
-                if (string.IsNullOrEmpty(input))
-                {
-                    throw new FormatException("Protobuf input is empty or null");
-                }
+                var token = ParseProtobufDocument(input);
 
-                byte[] bytes;
+                if (Config.SortKeys)
+                    token = SortKeysRecursively(token);
 
-                try
-                {
-                    bytes = Convert.FromBase64String(input);
-                }
-                catch (FormatException)
-                {
-                    bytes = ParseHexString(input);
-                }
-
-                JToken result = TryParseAsStruct(bytes) ??
-                               TryParseAsAny(bytes) ??
-                               TryParseAsValue(bytes) ??
-                               ParseAsGenericMessage(bytes);
-
-                if (Config.SortKeys && result is JObject)
-                {
-                    result = SortKeysRecursively(result);
-                }
-
-                return result;
-            }
-            catch (InvalidProtocolBufferException ex)
-            {
-                if (Config.IgnoreErrors)
-                {
-                    Console.WriteLine($"Warning: Protobuf parsing error ignored: {ex.Message}");
-                    return new JObject
-                    {
-                        ["error"] = ex.Message,
-                        ["raw"] = input
-                    };
-                }
-                throw new FormatException($"Invalid Protobuf: {ex.Message}", ex);
+                return token;
             }
             catch (Exception ex) when (ex is not FormatException)
             {
-                if (Config.IgnoreErrors)
+                return HandleParsingError(ex, input);
+            }
+        }
+
+        public override IEnumerable<JToken> ParseStream(string input)
+        {
+            if (!Config.UseStreaming)
+            {
+                yield return Parse(input);
+                yield break;
+            }
+
+            IEnumerable<JToken> tokens;
+
+            try
+            {
+                if (HasMultipleMessages(input))
                 {
-                    Console.WriteLine($"Warning: Protobuf parsing error ignored: {ex.Message}");
-                    return new JObject
-                    {
-                        ["error"] = ex.Message,
-                        ["raw"] = input
-                    };
+                    tokens = StreamMultipleMessages(input);
                 }
-                throw new FormatException($"Protobuf parsing failed: {ex.Message}", ex);
+                else if (HasLargeRepeatedFields(input))
+                {
+                    tokens = StreamLargeRepeatedFields(input);
+                }
+                else if (HasManyFields(input))
+                {
+                    tokens = StreamByFields(input);
+                }
+                else
+                {
+                    tokens = [ParseProtobufDocument(input)];
+                }
+            }
+            catch (InvalidProtocolBufferException ex)
+            {
+                tokens = HandleStreamingError(ex, input);
+            }
+            catch (Exception ex) when (ex is not FormatException)
+            {
+                tokens = HandleStreamingError(ex, input);
+            }
+
+            foreach (var token in tokens)
+            {
+                yield return token;
+            }
+        }
+
+        private JToken ParseProtobufDocument(string input)
+        {
+            if (string.IsNullOrEmpty(input))
+            {
+                throw new FormatException("Protobuf input is empty or null");
+            }
+
+            byte[] bytes = DecodeInput(input);
+
+            JToken result = TryParseAsStruct(bytes) ??
+                           TryParseAsAny(bytes) ??
+                           TryParseAsValue(bytes) ??
+                           ParseAsGenericMessage(bytes);
+
+            if (Config.NoMetadata)
+            {
+                result = RemoveMetadataProperties(result);
+            }
+
+            return result;
+        }
+
+        private static byte[] DecodeInput(string input)
+        {
+            try
+            {
+                return Convert.FromBase64String(input);
+            }
+            catch (FormatException)
+            {
+                return ParseHexString(input);
+            }
+        }
+
+        private static bool HasMultipleMessages(string input)
+        {
+            try
+            {
+                var bytes = Convert.FromBase64String(input);
+                return bytes.Length > 10000;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool HasLargeRepeatedFields(string input)
+        {
+            try
+            {
+                var bytes = DecodeInput(input);
+                using var stream = new MemoryStream(bytes);
+                using var reader = new BinaryReader(stream);
+
+                var fieldCounts = new Dictionary<int, int>();
+
+                while (stream.Position < stream.Length && stream.Position < 1000)
+                {
+                    try
+                    {
+                        var tag = ReadVarint(reader);
+                        var wireType = (int)(tag & 0x7);
+                        var fieldNum = (int)(tag >> 3);
+
+                        fieldCounts[fieldNum] = fieldCounts.GetValueOrDefault(fieldNum) + 1;
+
+                        SkipFieldValue(reader, wireType);
+                    }
+                    catch
+                    {
+                        break;
+                    }
+                }
+
+                return fieldCounts.Values.Any(count => count > 20);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool HasManyFields(string input)
+        {
+            try
+            {
+                var bytes = DecodeInput(input);
+                using var stream = new MemoryStream(bytes);
+                using var reader = new BinaryReader(stream);
+
+                var uniqueFields = new HashSet<int>();
+
+                while (stream.Position < stream.Length && stream.Position < 500)
+                {
+                    try
+                    {
+                        var tag = ReadVarint(reader);
+                        var wireType = (int)(tag & 0x7);
+                        var fieldNum = (int)(tag >> 3);
+
+                        uniqueFields.Add(fieldNum);
+
+                        SkipFieldValue(reader, wireType);
+                    }
+                    catch
+                    {
+                        break;
+                    }
+                }
+
+                return uniqueFields.Count > 15;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private IEnumerable<JToken> StreamMultipleMessages(string input)
+        {
+            var tokens = new List<JToken>();
+            const int chunkSize = 8192;
+
+            try
+            {
+                var bytes = DecodeInput(input);
+
+                for (int offset = 0; offset < bytes.Length; offset += chunkSize)
+                {
+                    var chunkLength = Math.Min(chunkSize, bytes.Length - offset);
+                    var chunk = new byte[chunkLength];
+                    Array.Copy(bytes, offset, chunk, 0, chunkLength);
+
+                    var chunkResult = TryParseAsStruct(chunk) ??
+                                     TryParseAsAny(chunk) ??
+                                     TryParseAsValue(chunk) ??
+                                     ParseAsGenericMessage(chunk);
+
+                    var chunkObject = new JObject();
+                    if (chunkResult is JObject obj)
+                    {
+                        foreach (var prop in obj.Properties())
+                        {
+                            chunkObject[prop.Name] = prop.Value;
+                        }
+                    }
+                    else
+                    {
+                        chunkObject["value"] = chunkResult;
+                    }
+
+                    chunkObject["_chunk_info"] = new JObject
+                    {
+                        ["chunk_start"] = offset,
+                        ["chunk_size"] = chunkLength,
+                        ["total_size"] = bytes.Length,
+                        ["type"] = "protobuf_chunk"
+                    };
+
+                    tokens.Add(Config.SortKeys ? SortKeysRecursively(chunkObject) : chunkObject);
+                }
+            }
+            catch
+            {
+                tokens.Add(ParseProtobufDocument(input));
+            }
+
+            return tokens;
+        }
+
+        private IEnumerable<JToken> StreamLargeRepeatedFields(string input)
+        {
+            var chunks = new List<JToken>();
+            const int itemsPerChunk = 10;
+
+            try
+            {
+                var bytes = DecodeInput(input);
+                using var stream = new MemoryStream(bytes);
+                using var reader = new BinaryReader(stream);
+
+                var fieldGroups = new Dictionary<int, List<JToken>>();
+                var scalarFields = new JObject();
+
+                while (stream.Position < stream.Length)
+                {
+                    try
+                    {
+                        var tag = ReadVarint(reader);
+                        var wireType = (int)(tag & 0x7);
+                        var fieldNum = (int)(tag >> 3);
+
+                        var fieldValue = ReadFieldValue(reader, wireType);
+
+                        if (!fieldGroups.ContainsKey(fieldNum))
+                        {
+                            fieldGroups[fieldNum] = new List<JToken>();
+                        }
+
+                        fieldGroups[fieldNum].Add(fieldValue);
+                    }
+                    catch
+                    {
+                        break;
+                    }
+                }
+
+                foreach (var kvp in fieldGroups)
+                {
+                    var fieldNum = kvp.Key;
+                    var values = kvp.Value;
+
+                    if (values.Count > itemsPerChunk)
+                    {
+                        for (int i = 0; i < values.Count; i += itemsPerChunk)
+                        {
+                            var chunkValues = values.Skip(i).Take(itemsPerChunk).ToList();
+                            var chunkObject = new JObject();
+                            chunkObject[$"field_{fieldNum}"] = new JArray(chunkValues);
+
+                            chunkObject["_chunk_info"] = new JObject
+                            {
+                                ["field_number"] = fieldNum,
+                                ["chunk_start"] = i,
+                                ["chunk_size"] = chunkValues.Count,
+                                ["total_items"] = values.Count,
+                                ["type"] = "repeated_field_chunk"
+                            };
+
+                            chunks.Add(Config.SortKeys ? SortKeysRecursively(chunkObject) : chunkObject);
+                        }
+                    }
+                    else
+                    {
+                        scalarFields[$"field_{fieldNum}"] = values.Count == 1 ? values[0] : new JArray(values);
+                    }
+                }
+
+                if (scalarFields.Count > 0)
+                {
+                    chunks.Insert(0, Config.SortKeys ? SortKeysRecursively(scalarFields) : scalarFields);
+                }
+            }
+            catch
+            {
+                chunks.Add(ParseProtobufDocument(input));
+            }
+
+            return chunks;
+        }
+
+        private IEnumerable<JToken> StreamByFields(string input)
+        {
+            var chunks = new List<JToken>();
+            const int fieldsPerChunk = 5;
+
+            try
+            {
+                var bytes = DecodeInput(input);
+                using var stream = new MemoryStream(bytes);
+                using var reader = new BinaryReader(stream);
+
+                var currentChunk = new JObject();
+                var processedFields = 0;
+                var uniqueFields = new HashSet<int>();
+
+                while (stream.Position < stream.Length)
+                {
+                    try
+                    {
+                        var tag = ReadVarint(reader);
+                        var wireType = (int)(tag & 0x7);
+                        var fieldNum = (int)(tag >> 3);
+
+                        var fieldValue = ReadFieldValue(reader, wireType);
+
+                        if (!uniqueFields.Contains(fieldNum))
+                        {
+                            currentChunk[$"field_{fieldNum}"] = fieldValue;
+                            uniqueFields.Add(fieldNum);
+                            processedFields++;
+
+                            if (processedFields >= fieldsPerChunk)
+                            {
+                                chunks.Add(Config.SortKeys ? SortKeysRecursively(currentChunk) : currentChunk);
+                                currentChunk = new JObject();
+                                processedFields = 0;
+                                uniqueFields.Clear();
+                            }
+                        }
+                        else
+                        {
+                            var existingValue = currentChunk[$"field_{fieldNum}"];
+                            if (existingValue is JArray array)
+                            {
+                                array.Add(fieldValue);
+                            }
+                            else
+                            {
+                                currentChunk[$"field_{fieldNum}"] = new JArray { existingValue, fieldValue };
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        break;
+                    }
+                }
+
+                if (processedFields > 0)
+                {
+                    chunks.Add(Config.SortKeys ? SortKeysRecursively(currentChunk) : currentChunk);
+                }
+            }
+            catch
+            {
+                chunks.Add(ParseProtobufDocument(input));
+            }
+
+            return chunks;
+        }
+
+        private IEnumerable<JToken> HandleStreamingError(Exception ex, string input)
+        {
+            if (Config.IgnoreErrors)
+            {
+                Console.WriteLine($"Warning: Protobuf streaming error ignored: {ex.Message}");
+                return [HandleParsingError(ex, input)];
+            }
+            else
+            {
+                throw new FormatException($"Protobuf streaming failed: {ex.Message}", ex);
+            }
+        }
+
+        private JObject HandleParsingError(Exception ex, string input)
+        {
+            if (Config.IgnoreErrors)
+            {
+                Console.WriteLine($"Warning: Protobuf parsing error ignored: {ex.Message}");
+                return new JObject
+                {
+                    ["error"] = ex.Message,
+                    ["raw"] = input.Length > 1000 ? string.Concat(input.AsSpan(0, 1000), "...") : input
+                };
+            }
+            throw new FormatException($"Invalid Protobuf: {ex.Message}", ex);
+        }
+
+        private JToken RemoveMetadataProperties(JToken token)
+        {
+            if (token is JObject obj)
+            {
+                var result = new JObject();
+                foreach (var prop in obj.Properties())
+                {
+                    if (!prop.Name.StartsWith("_") &&
+                        !prop.Name.Equals("format", StringComparison.OrdinalIgnoreCase))
+                    {
+                        result[prop.Name] = RemoveMetadataProperties(prop.Value);
+                    }
+                }
+                return result;
+            }
+            else if (token is JArray array)
+            {
+                return new JArray(array.Select(RemoveMetadataProperties));
+            }
+
+            return token;
+        }
+
+        private static void SkipFieldValue(BinaryReader reader, int wireType)
+        {
+            switch (wireType)
+            {
+                case 0:
+                    ReadVarint(reader);
+                    break;
+                case 1:
+                    reader.ReadBytes(8);
+                    break;
+                case 2:
+                    var length = (int)ReadVarint(reader);
+                    reader.ReadBytes(length);
+                    break;
+                case 5:
+                    reader.ReadBytes(4);
+                    break;
+                default:
+                    throw new FormatException($"Unknown wire type: {wireType}");
             }
         }
 
@@ -124,7 +526,7 @@ namespace FormatConverter.Protobuf
             }
         }
 
-        private JObject ParseAsGenericMessage(byte[] bytes)
+        private static JObject ParseAsGenericMessage(byte[] bytes)
         {
             var result = new JObject();
 
@@ -142,7 +544,24 @@ namespace FormatConverter.Protobuf
                     var fieldNum = (int)(tag >> 3);
 
                     var fieldValue = ReadFieldValue(reader, wireType);
-                    fields[$"field_{fieldNum}"] = fieldValue;
+
+                    var fieldKey = $"field_{fieldNum}";
+                    if (fields.ContainsKey(fieldKey))
+                    {
+                        var existingValue = fields[fieldKey];
+                        if (existingValue is JArray array)
+                        {
+                            array.Add(fieldValue);
+                        }
+                        else
+                        {
+                            fields[fieldKey] = new JArray { existingValue, fieldValue };
+                        }
+                    }
+                    else
+                    {
+                        fields[fieldKey] = fieldValue;
+                    }
                 }
             }
             catch
@@ -237,7 +656,7 @@ namespace FormatConverter.Protobuf
             return value;
         }
 
-        private JValue ReadFieldValue(BinaryReader reader, int wireType)
+        private static JValue ReadFieldValue(BinaryReader reader, int wireType)
         {
             return wireType switch
             {
@@ -249,7 +668,7 @@ namespace FormatConverter.Protobuf
             };
         }
 
-        private JValue ReadLengthDelimitedField(BinaryReader reader)
+        private static JValue ReadLengthDelimitedField(BinaryReader reader)
         {
             var length = (int)ReadVarint(reader);
             var bytes = reader.ReadBytes(length);
@@ -262,7 +681,7 @@ namespace FormatConverter.Protobuf
                     return new JValue(str);
                 }
             }
-            catch { }
+            finally { }
 
             return new JValue(Convert.ToBase64String(bytes));
         }

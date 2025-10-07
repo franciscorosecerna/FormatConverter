@@ -10,51 +10,297 @@ namespace FormatConverter.Bxml
 
         public override string Serialize(JToken data)
         {
+            if (Config.UseStreaming)
+            {
+                var allBytes = SerializeStream([data])
+                    .SelectMany(chunk => Convert.FromBase64String(chunk))
+                    .ToArray();
+                return FormatOutput(allBytes);
+            }
+
+            return SerializeRegular(data);
+        }
+
+        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
+        {
+            if (!Config.UseStreaming)
+            {
+                yield return Serialize(new JArray(data));
+                yield break;
+            }
+
+            foreach (var token in data)
+            {
+                foreach (var chunk in StreamToken(token))
+                {
+                    yield return chunk;
+                }
+            }
+        }
+
+        private IEnumerable<string> StreamToken(JToken token)
+        {
+            var processed = ProcessDataBeforeSerialization(token);
+
+            return processed.Type switch
+            {
+                JTokenType.Array => StreamChunked(((JArray)processed).Children()),
+                JTokenType.Object => StreamChunkedObject((JObject)processed),
+                _ => StreamSingle(processed)
+            };
+        }
+
+        private IEnumerable<string> StreamChunked(IEnumerable<JToken> items)
+        {
+            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
+            var buffer = new List<JToken>();
+            var currentBufferSize = 0;
+            var totalProcessed = 0;
+            var itemCount = items is ICollection<JToken> collection ? collection.Count : -1;
+
+            foreach (var item in items)
+            {
+                var estimatedSize = EstimateTokenSize(item);
+
+                if (buffer.Count > 0 && currentBufferSize + estimatedSize > bufferSize)
+                {
+                    yield return SerializeChunk(buffer);
+                    buffer.Clear();
+                    currentBufferSize = 0;
+
+                    if (itemCount > 0 && totalProcessed % Math.Max(1, itemCount / 10) == 0)
+                    {
+                        var progress = (double)totalProcessed / itemCount * 100;
+                        Console.WriteLine($"Serialization progress: {progress:F1}%");
+                    }
+                }
+
+                buffer.Add(item);
+                currentBufferSize += estimatedSize;
+                totalProcessed++;
+            }
+
+            if (buffer.Count > 0)
+            {
+                yield return SerializeChunk(buffer);
+            }
+        }
+
+        private IEnumerable<string> StreamChunkedObject(JObject obj)
+        {
+            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
+            var buffer = new List<JProperty>();
+            var currentBufferSize = 0;
+            var totalProcessed = 0;
+            var properties = Config.SortKeys
+                ? obj.Properties().OrderBy(p => p.Name)
+                : obj.Properties();
+            var propCount = obj.Properties().Count();
+
+            foreach (var prop in properties)
+            {
+                if (Config.NoMetadata && IsMetadataField(prop.Name))
+                    continue;
+
+                var estimatedSize = EstimateTokenSize(prop.Value) + prop.Name.Length;
+
+                if (buffer.Count > 0 && currentBufferSize + estimatedSize > bufferSize)
+                {
+                    yield return SerializeChunkProperties(buffer);
+                    buffer.Clear();
+                    currentBufferSize = 0;
+
+                    if (totalProcessed % Math.Max(1, propCount / 10) == 0)
+                    {
+                        var progress = (double)totalProcessed / propCount * 100;
+                        Console.WriteLine($"Serialization progress: {progress:F1}%");
+                    }
+                }
+
+                buffer.Add(prop);
+                currentBufferSize += estimatedSize;
+                totalProcessed++;
+            }
+
+            if (buffer.Count > 0)
+            {
+                yield return SerializeChunkProperties(buffer);
+            }
+        }
+
+        private string SerializeChunk(List<JToken> items)
+        {
             try
             {
-                using var buffer = new MemoryStream();
-                using var writer = new BinaryWriter(buffer);
-
-                writer.Write(Encoding.ASCII.GetBytes("BXML"));
-
-                var elements = new List<BxmlElement>();
-                var stringTable = new Dictionary<string, uint>();
-                uint stringIndex = 0;
-
-                uint AddString(string s)
+                var arrayWrapper = new JArray(items);
+                var bytes = SerializeToBxml("ChunkArray", arrayWrapper);
+                return FormatOutput(bytes);
+            }
+            catch (Exception ex)
+            {
+                if (Config.IgnoreErrors)
                 {
-                    if (string.IsNullOrEmpty(s)) s = "";
-
-                    if (!stringTable.ContainsKey(s))
-                    {
-                        if (stringTable.Count >= MAX_STRING_TABLE_SIZE)
-                        {
-                            throw new FormatException($"String table size limit {MAX_STRING_TABLE_SIZE} exceeded");
-                        }
-                        stringTable[s] = stringIndex++;
-                    }
-                    return stringTable[s];
+                    return FormatOutput(CreateErrorBxml(ex.Message, items.Count));
                 }
-
-                var rootElement = ConvertJsonToBxmlElement("Root", data, AddString);
-                elements.Add(rootElement);
-
-                writer.Write((uint)elements.Count);
-
-                foreach (var element in elements)
+                else
                 {
-                    WriteElement(writer, element);
+                    throw new FormatException($"Error serializing chunk: {ex.Message}", ex);
                 }
+            }
+        }
 
-                WriteStringTable(writer, stringTable);
+        private string SerializeChunkProperties(List<JProperty> properties)
+        {
+            try
+            {
+                var objWrapper = new JObject();
+                foreach (var prop in properties)
+                {
+                    objWrapper[prop.Name] = prop.Value;
+                }
+                var bytes = SerializeToBxml("ChunkObject", objWrapper);
+                return FormatOutput(bytes);
+            }
+            catch (Exception ex)
+            {
+                if (Config.IgnoreErrors)
+                {
+                    return FormatOutput(CreateErrorBxml(ex.Message, properties.Count));
+                }
+                else
+                {
+                    throw new FormatException($"Error serializing properties chunk: {ex.Message}", ex);
+                }
+            }
+        }
 
-                var result = buffer.ToArray();
-                return FormatOutput(result);
+        private IEnumerable<string> StreamSingle(JToken token)
+        {
+            IEnumerable<string> Iterator()
+            {
+                var bytes = SerializeToBxml("Root", token);
+                yield return FormatOutput(bytes);
+            }
+
+            try
+            {
+                return Iterator();
+            }
+            catch (Exception ex)
+            {
+                if (Config.IgnoreErrors)
+                {
+                    return [FormatOutput(CreateErrorBxml(ex.Message, 1))];
+                }
+                else
+                {
+                    throw new FormatException($"Error serializing single token: {ex.Message}", ex);
+                }
+            }
+        }
+
+        private string SerializeRegular(JToken data)
+        {
+            try
+            {
+                var processed = ProcessDataBeforeSerialization(data);
+                var bytes = SerializeToBxml("Root", processed);
+                return FormatOutput(bytes);
             }
             catch (Exception ex) when (ex is not FormatException)
             {
                 throw new FormatException($"BXML serialization failed: {ex.Message}", ex);
             }
+        }
+
+        private byte[] SerializeToBxml(string rootName, JToken data)
+        {
+            using var buffer = new MemoryStream();
+            using var writer = new BinaryWriter(buffer);
+
+            writer.Write(Encoding.ASCII.GetBytes("BXML"));
+
+            var elements = new List<BxmlElement>();
+            var stringTable = new Dictionary<string, uint>();
+            uint stringIndex = 0;
+
+            uint AddString(string s)
+            {
+                if (string.IsNullOrEmpty(s)) s = "";
+
+                if (!stringTable.TryGetValue(s, out uint value))
+                {
+                    if (stringTable.Count >= MAX_STRING_TABLE_SIZE)
+                    {
+                        throw new FormatException($"String table size limit {MAX_STRING_TABLE_SIZE} exceeded");
+                    }
+
+                    value = stringIndex++;
+                    stringTable[s] = value;
+                }
+                return value;
+            }
+
+            var rootElement = ConvertJsonToBxmlElement(rootName, data, AddString);
+            elements.Add(rootElement);
+
+            writer.Write((uint)elements.Count);
+
+            foreach (var element in elements)
+            {
+                WriteElement(writer, element);
+            }
+
+            WriteStringTable(writer, stringTable);
+
+            return buffer.ToArray();
+        }
+
+        private JToken ProcessDataBeforeSerialization(JToken data)
+        {
+            if (Config.SortKeys)
+                data = SortKeysRecursively(data);
+
+            if (Config.ArrayWrap && data.Type != JTokenType.Array)
+                return new JArray(data);
+
+            return data;
+        }
+
+        private JToken SortKeysRecursively(JToken token)
+        {
+            return token.Type switch
+            {
+                JTokenType.Object => SortJObject((JObject)token),
+                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
+                _ => token
+            };
+        }
+
+        private JObject SortJObject(JObject obj)
+        {
+            var sorted = new JObject();
+            foreach (var property in obj.Properties().OrderBy(p => p.Name))
+            {
+                sorted[property.Name] = SortKeysRecursively(property.Value);
+            }
+            return sorted;
+        }
+
+        private static int EstimateTokenSize(JToken token)
+        {
+            return token.Type switch
+            {
+                JTokenType.String => token.ToString().Length + 20,
+                JTokenType.Integer => 30,
+                JTokenType.Float => 30,
+                JTokenType.Boolean => 20,
+                JTokenType.Null => 20,
+                JTokenType.Date => 40,
+                JTokenType.Object => ((JObject)token).Properties().Sum(p => EstimateTokenSize(p.Value) + p.Name.Length + 20),
+                JTokenType.Array => ((JArray)token).Sum(EstimateTokenSize) + 20,
+                _ => 50
+            };
         }
 
         private BxmlElement ConvertJsonToBxmlElement(string name, JToken token, Func<string, uint> addString)
@@ -234,9 +480,7 @@ namespace FormatConverter.Bxml
         private void WriteElement(BinaryWriter writer, BxmlElement element)
         {
             writer.Write((byte)1);
-
             writer.Write(element.NameIndex);
-
             writer.Write((uint)element.Attributes.Count);
 
             var attributes = Config.SortKeys
@@ -312,6 +556,18 @@ namespace FormatConverter.Bxml
             }
 
             return string.Concat(bytes.Select(b => Convert.ToString(b, 2).PadLeft(8, '0')));
+        }
+
+        private byte[] CreateErrorBxml(string errorMessage, int count)
+        {
+            var errorObj = new JObject
+            {
+                ["error"] = errorMessage,
+                ["itemCount"] = count,
+                ["timestamp"] = DateTime.UtcNow.ToString("O")
+            };
+
+            return SerializeToBxml("Error", errorObj);
         }
     }
 }

@@ -2,6 +2,7 @@
 using Newtonsoft.Json.Linq;
 using Google.Protobuf.WellKnownTypes;
 using Google.Protobuf;
+using System.Text;
 
 namespace FormatConverter.Protobuf
 {
@@ -9,45 +10,295 @@ namespace FormatConverter.Protobuf
     {
         public override string Serialize(JToken data)
         {
-            try
+            if (Config.UseStreaming)
             {
-                IMessage protobufMessage;
-
-                // Determine the appropriate Protobuf message type based on data structure
-                if (ShouldSerializeAsAny(data))
-                {
-                    protobufMessage = ConvertJTokenToAny(data);
-                }
-                else if (ShouldSerializeAsValue(data))
-                {
-                    protobufMessage = ConvertJTokenToValue(data);
-                }
-                else
-                {
-                    protobufMessage = ConvertJTokenToStruct(data);
-                }
-
-                var bytes = protobufMessage.ToByteArray();
-
-                // Return format based on configuration
-                return FormatOutput(bytes);
+                return string.Join("", SerializeStream([data]));
             }
-            catch (Exception ex)
+
+            return SerializeRegular(data);
+        }
+
+        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
+        {
+            if (!Config.UseStreaming)
             {
-                throw new FormatException($"Protobuf serialization failed: {ex.Message}", ex);
+                yield return Serialize(new JArray(data));
+                yield break;
+            }
+
+            foreach (var token in data)
+            {
+                foreach (var chunk in StreamToken(token))
+                {
+                    yield return chunk;
+                }
             }
         }
 
-        private bool ShouldSerializeAsAny(JToken data)
+        private IEnumerable<string> StreamToken(JToken token)
+        {
+            var processed = ProcessDataBeforeSerialization(token);
+
+            if (processed.Type == JTokenType.Array)
+            {
+                return StreamArray((JArray)processed);
+            }
+            else if (processed.Type == JTokenType.Object)
+            {
+                return StreamObject((JObject)processed);
+            }
+            else
+            {
+                return StreamSingle(processed);
+            }
+        }
+
+        private IEnumerable<string> StreamArray(JArray array)
+        {
+            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
+
+            IEnumerable<string> Iterator()
+            {
+                var buffer = new List<JToken>();
+                var currentBufferSize = 0;
+                var totalProcessed = 0;
+                var totalItems = array.Count;
+
+                foreach (var item in array)
+                {
+                    var serialized = SerializeToProtobuf(item);
+                    var itemSizeInBytes = serialized.Length;
+
+                    if (buffer.Count > 0 && currentBufferSize + itemSizeInBytes > bufferSize)
+                    {
+                        yield return SerializeBufferedItems(buffer);
+                        buffer.Clear();
+                        currentBufferSize = 0;
+
+                        if (totalItems > 0 && totalProcessed % Math.Max(1, totalItems / 10) == 0)
+                        {
+                            var progress = (double)totalProcessed / totalItems * 100;
+                            Console.WriteLine($"Serialization progress: {progress:F1}%");
+                        }
+                    }
+
+                    buffer.Add(item);
+                    currentBufferSize += itemSizeInBytes;
+                    totalProcessed++;
+                }
+
+                if (buffer.Count > 0)
+                {
+                    yield return SerializeBufferedItems(buffer);
+                }
+            }
+
+            try
+            {
+                return Iterator();
+            }
+            catch (Exception ex)
+            {
+                if (Config.IgnoreErrors)
+                {
+                    Console.WriteLine($"Warning: Protobuf array streaming error ignored: {ex.Message}");
+                    return [CreateErrorProtobuf(ex.Message)];
+                }
+                else
+                {
+                    throw new FormatException($"Protobuf array streaming failed: {ex.Message}", ex);
+                }
+            }
+        }
+
+        private IEnumerable<string> StreamObject(JObject obj)
+        {
+            var properties = obj.Properties().ToList();
+            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
+            var maxPropertiesPerChunk = Math.Max(5, bufferSize / 1024);
+
+            IEnumerable<string> Iterator()
+            {
+                var currentChunk = new JObject();
+                var processedCount = 0;
+                var totalProperties = properties.Count;
+
+                foreach (var prop in properties)
+                {
+                    currentChunk[prop.Name] = prop.Value;
+                    processedCount++;
+
+                    if (processedCount >= maxPropertiesPerChunk)
+                    {
+                        yield return SerializeRegular(currentChunk);
+                        currentChunk = new JObject();
+                        processedCount = 0;
+
+                        if (totalProperties > 10)
+                        {
+                            var progress = (double)processedCount / totalProperties * 100;
+                            if (progress % 10 < 1)
+                            {
+                                Console.WriteLine($"Object streaming progress: {progress:F1}%");
+                            }
+                        }
+                    }
+                }
+
+                if (processedCount > 0)
+                {
+                    yield return SerializeRegular(currentChunk);
+                }
+            }
+
+            try
+            {
+                return Iterator();
+            }
+            catch (Exception ex)
+            {
+                if (Config.IgnoreErrors)
+                {
+                    Console.WriteLine($"Warning: Protobuf object streaming error ignored: {ex.Message}");
+                    return [CreateErrorProtobuf(ex.Message)];
+                }
+                else
+                {
+                    throw new FormatException($"Protobuf object streaming failed: {ex.Message}", ex);
+                }
+            }
+        }
+
+        private IEnumerable<string> StreamSingle(JToken token)
+        {
+            IEnumerable<string> Iterator()
+            {
+                var serialized = SerializeToProtobuf(token);
+                yield return serialized;
+            }
+
+            try
+            {
+                return Iterator();
+            }
+            catch (Exception ex)
+            {
+                if (Config.IgnoreErrors)
+                {
+                    Console.WriteLine($"Warning: Protobuf single token serialization error ignored: {ex.Message}");
+                    return [CreateErrorProtobuf(ex.Message)];
+                }
+                else
+                {
+                    throw new FormatException($"Error serializing single token: {ex.Message}", ex);
+                }
+            }
+        }
+
+        private string SerializeBufferedItems(List<JToken> items)
+        {
+            var combinedStruct = new Struct();
+
+            for (int i = 0; i < items.Count; i++)
+            {
+                try
+                {
+                    var itemStruct = ConvertJTokenToStruct(items[i]);
+                    combinedStruct.Fields[$"item_{i}"] = Value.ForStruct(itemStruct);
+                }
+                catch (Exception ex)
+                {
+                    if (Config.IgnoreErrors)
+                    {
+                        Console.WriteLine($"Warning: Protobuf buffer item serialization error ignored: {ex.Message}");
+                        continue;
+                    }
+                    else
+                    {
+                        throw;
+                    }
+                }
+            }
+
+            var bytes = combinedStruct.ToByteArray();
+            return FormatOutput(bytes);
+        }
+
+        private string SerializeRegular(JToken data)
+        {
+            var processed = ProcessDataBeforeSerialization(data);
+
+            try
+            {
+                return SerializeToProtobuf(processed);
+            }
+            catch (Exception ex)
+            {
+                return HandleSerializationError(ex, processed);
+            }
+        }
+
+        private string SerializeToProtobuf(JToken data)
+        {
+            IMessage protobufMessage;
+
+            if (ShouldSerializeAsAny(data))
+            {
+                protobufMessage = ConvertJTokenToAny(data);
+            }
+            else if (ShouldSerializeAsValue(data))
+            {
+                protobufMessage = ConvertJTokenToValue(data);
+            }
+            else
+            {
+                protobufMessage = ConvertJTokenToStruct(data);
+            }
+
+            var bytes = protobufMessage.ToByteArray();
+            return FormatOutput(bytes);
+        }
+
+        private JToken ProcessDataBeforeSerialization(JToken data)
+        {
+            if (Config.SortKeys)
+                data = SortKeysRecursively(data);
+
+            if (Config.ArrayWrap && data.Type != JTokenType.Array)
+                return new JArray(data);
+
+            return data;
+        }
+
+        private string HandleSerializationError(Exception ex, JToken data)
+        {
+            if (Config.IgnoreErrors)
+            {
+                Console.WriteLine($"Warning: Protobuf serialization error ignored: {ex.Message}");
+                return CreateErrorProtobuf(ex.Message);
+            }
+            throw new FormatException($"Protobuf serialization failed: {ex.Message}", ex);
+        }
+
+        private string CreateErrorProtobuf(string errorMessage)
+        {
+            var errorStruct = new Struct();
+            errorStruct.Fields["error"] = Value.ForString(errorMessage);
+            errorStruct.Fields["timestamp"] = Value.ForString(DateTime.UtcNow.ToString("O"));
+
+            var bytes = errorStruct.ToByteArray();
+            return FormatOutput(bytes);
+        }
+
+        private static bool ShouldSerializeAsAny(JToken data)
         {
             return data is JObject obj &&
                    obj.ContainsKey("@type") &&
                    obj.ContainsKey("value");
         }
 
-        private bool ShouldSerializeAsValue(JToken data)
+        private static bool ShouldSerializeAsValue(JToken data)
         {
-            // Single primitive values should be serialized as Value
             return data.Type switch
             {
                 JTokenType.String => true,
@@ -59,7 +310,7 @@ namespace FormatConverter.Protobuf
             };
         }
 
-        private Any ConvertJTokenToAny(JToken data)
+        private static Any ConvertJTokenToAny(JToken data)
         {
             if (data is not JObject obj)
                 throw new FormatException("Any message must be a JSON object with @type and value fields");
@@ -95,7 +346,7 @@ namespace FormatConverter.Protobuf
             };
         }
 
-        private Value ConvertStringToValue(string? str)
+        private static Value ConvertStringToValue(string? str)
         {
             if (str == null) return Value.ForNull();
             return Value.ForString(str);
@@ -202,7 +453,7 @@ namespace FormatConverter.Protobuf
 
         private string FormatAsHex(byte[] bytes)
         {
-            var hex = BitConverter.ToString(bytes).Replace("-", "");
+            var hex = Convert.ToHexString(bytes);
 
             if (Config.PrettyPrint && !Config.Minify)
             {
@@ -222,6 +473,26 @@ namespace FormatConverter.Protobuf
             }
 
             return string.Concat(bytes.Select(b => Convert.ToString(b, 2).PadLeft(8, '0')));
+        }
+
+        private JToken SortKeysRecursively(JToken token)
+        {
+            return token.Type switch
+            {
+                JTokenType.Object => SortJObject((JObject)token),
+                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
+                _ => token
+            };
+        }
+
+        private JObject SortJObject(JObject obj)
+        {
+            var sorted = new JObject();
+            foreach (var property in obj.Properties().OrderBy(p => p.Name))
+            {
+                sorted[property.Name] = SortKeysRecursively(property.Value);
+            }
+            return sorted;
         }
     }
 }

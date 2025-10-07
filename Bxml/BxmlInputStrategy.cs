@@ -14,61 +14,376 @@ namespace FormatConverter.Bxml
 
         public override JToken Parse(string input)
         {
+            if (Config.UseStreaming)
+            {
+                var firstToken = ParseStream(input).FirstOrDefault();
+                return firstToken ?? new JObject();
+            }
+
             try
             {
-                if (string.IsNullOrEmpty(input))
-                {
-                    throw new FormatException("BXML input is empty or null");
-                }
+                var token = ParseBxmlDocument(input);
 
-                byte[] bxmlData;
+                if (Config.SortKeys)
+                    token = SortKeysRecursively(token);
 
-                try
-                {
-                    bxmlData = Convert.FromBase64String(input);
-                }
-                catch (FormatException)
-                {
-                    bxmlData = ParseHexString(input);
-                }
-
-                if (bxmlData.Length < 12)
-                {
-                    throw new FormatException($"BXML data too short: {bxmlData.Length} bytes (minimum 12 required)");
-                }
-
-                var result = ParseBxmlData(bxmlData);
-
-                if (Config.SortKeys && result is JObject)
-                {
-                    result = SortKeysRecursively(result);
-                }
-
-                return result;
+                return token;
             }
             catch (Exception ex) when (ex is not FormatException)
             {
-                if (Config.IgnoreErrors)
-                {
-                    Console.WriteLine($"Warning: BXML parsing error ignored: {ex.Message}");
-                    return new JObject
-                    {
-                        ["error"] = ex.Message,
-                        ["raw"] = input
-                    };
-                }
-                throw new FormatException($"BXML parsing failed: {ex.Message}", ex);
+                return HandleParsingError(ex, input);
             }
         }
 
-        private byte[] ParseHexString(string hex)
+        public override IEnumerable<JToken> ParseStream(string input)
+        {
+            if (!Config.UseStreaming)
+            {
+                yield return Parse(input);
+                yield break;
+            }
+
+            var bytes = DecodeInput(input);
+            var totalSize = bytes.Length;
+
+            if (PeekForLargeTree(bytes))
+            {
+                foreach (var item in StreamBxmlTree(bytes, totalSize))
+                    yield return item;
+            }
+            else if (PeekForManyElements(bytes))
+            {
+                foreach (var chunk in StreamBxmlElements(bytes, totalSize))
+                    yield return chunk;
+            }
+            else
+            {
+                foreach (var token in StreamSimpleDocument(bytes, totalSize))
+                    yield return token;
+            }
+        }
+
+        private IEnumerable<JToken> StreamBxmlTree(byte[] bytes, int totalSize)
+        {
+            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
+
+            IEnumerable<JToken> Iterator()
+            {
+                using var buffer = new MemoryStream(bytes);
+                using var reader = new BinaryReader(buffer);
+
+                ValidateSignature(reader);
+                uint elementCount = reader.ReadUInt32();
+
+                var elements = new List<BxmlElement>();
+                for (int i = 0; i < elementCount; i++)
+                {
+                    elements.Add(ReadElement(reader, 0));
+                }
+
+                uint stringCount = reader.ReadUInt32();
+                var stringTable = ReadStringTable(reader, stringCount);
+
+                var itemBuffer = new List<BxmlElement>();
+                var currentBufferSize = 0;
+                var processedBytes = 0L;
+                var elementsPerChunk = Math.Max(5, bufferSize / 1024);
+
+                foreach (var element in elements)
+                {
+                    itemBuffer.Add(element);
+                    var elementSize = EstimateElementSize(element, stringTable);
+                    currentBufferSize += elementSize;
+                    processedBytes += elementSize;
+
+                    if (currentBufferSize >= bufferSize || itemBuffer.Count >= elementsPerChunk)
+                    {
+                        foreach (var bufferedItem in itemBuffer)
+                        {
+                            var json = ConvertBxmlElementToJson(bufferedItem, stringTable);
+                            if (Config.SortKeys)
+                                json = (JObject)SortKeysRecursively(json);
+                            yield return json;
+                        }
+
+                        itemBuffer.Clear();
+                        currentBufferSize = 0;
+
+                        if (totalSize > bufferSize * 10)
+                        {
+                            var progress = (double)processedBytes / totalSize * 100;
+                            if (progress % 10 < 1)
+                                Console.WriteLine($"Tree streaming progress: {progress:F1}%");
+                        }
+                    }
+                }
+
+                foreach (var bufferedItem in itemBuffer)
+                {
+                    var json = ConvertBxmlElementToJson(bufferedItem, stringTable);
+                    if (Config.SortKeys)
+                        json = (JObject)SortKeysRecursively(json);
+                    yield return json;
+                }
+            }
+
+            try
+            {
+                return Iterator();
+            }
+            catch (Exception ex) when (ex is not FormatException)
+            {
+                return HandleStreamingError(ex, bytes);
+            }
+        }
+
+        private IEnumerable<JToken> StreamBxmlElements(byte[] bytes, int totalSize)
+        {
+            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
+
+            IEnumerable<JToken> Iterator()
+            {
+                using var buffer = new MemoryStream(bytes);
+                using var reader = new BinaryReader(buffer);
+
+                ValidateSignature(reader);
+                uint elementCount = reader.ReadUInt32();
+
+                var elements = new List<BxmlElement>();
+                for (int i = 0; i < elementCount; i++)
+                {
+                    elements.Add(ReadElement(reader, 0));
+                }
+
+                uint stringCount = reader.ReadUInt32();
+                var stringTable = ReadStringTable(reader, stringCount);
+
+                var memoryThreshold = bufferSize > 0 ? bufferSize : 1024 * 1024;
+                var maxElementsPerChunk = Math.Max(10, bufferSize / 512);
+
+                var currentChunk = new JObject();
+                int elementIdx = 0;
+                var currentChunkSize = 0;
+                var processedBytes = 0L;
+
+                foreach (var element in elements)
+                {
+                    var elementJson = ConvertBxmlElementToJson(element, stringTable);
+                    var elementName = $"element_{elementIdx}";
+
+                    if (elementJson is JObject elementObj && elementObj.Properties().Any())
+                    {
+                        var firstProp = elementObj.Properties().First();
+                        currentChunk[firstProp.Name] = firstProp.Value;
+                    }
+                    else
+                    {
+                        currentChunk[elementName] = elementJson;
+                    }
+
+                    elementIdx++;
+
+                    var elementSize = EstimateElementSize(element, stringTable);
+                    currentChunkSize += elementSize;
+                    processedBytes += elementSize;
+
+                    if (elementIdx >= maxElementsPerChunk || currentChunkSize >= memoryThreshold)
+                    {
+                        yield return Config.SortKeys ? SortJObject(currentChunk) : currentChunk;
+
+                        currentChunk = new JObject();
+                        elementIdx = 0;
+                        currentChunkSize = 0;
+
+                        if (totalSize > bufferSize * 10)
+                        {
+                            var progress = (double)processedBytes / totalSize * 100;
+                            if (progress % 10 < 1)
+                                Console.WriteLine($"Elements streaming progress: {progress:F1}%");
+                        }
+                    }
+                }
+
+                if (elementIdx > 0)
+                    yield return Config.SortKeys ? SortJObject(currentChunk) : currentChunk;
+            }
+
+            try
+            {
+                return Iterator();
+            }
+            catch (Exception ex) when (ex is not FormatException)
+            {
+                return HandleStreamingError(ex, bytes);
+            }
+        }
+
+        private IEnumerable<JToken> StreamSimpleDocument(byte[] bytes, int totalSize)
+        {
+            IEnumerable<JToken> Iterator()
+            {
+                var token = ParseBxmlDocument(Convert.ToBase64String(bytes));
+
+                if (Config.SortKeys)
+                    token = SortKeysRecursively(token);
+
+                if (totalSize > 4096)
+                {
+                    Console.WriteLine($"Simple document streaming progress: 100.0%");
+                }
+
+                yield return token;
+            }
+
+            try
+            {
+                return Iterator();
+            }
+            catch (Exception ex) when (ex is not FormatException)
+            {
+                return HandleStreamingError(ex, bytes);
+            }
+        }
+
+        private IEnumerable<JToken> HandleStreamingError(Exception ex, byte[] bytes)
+        {
+            if (Config.IgnoreErrors)
+            {
+                Console.WriteLine($"Warning: BXML streaming error ignored: {ex.Message}");
+                return [HandleParsingError(ex, Convert.ToBase64String(bytes))];
+            }
+            else
+            {
+                throw new FormatException($"Invalid BXML during streaming: {ex.Message}", ex);
+            }
+        }
+
+        private JToken ParseBxmlDocument(string input)
+        {
+            if (string.IsNullOrEmpty(input))
+                throw new FormatException("BXML input is empty or null");
+
+            var bxmlData = DecodeInput(input);
+
+            if (bxmlData.Length < 12)
+                throw new FormatException($"BXML data too short: {bxmlData.Length} bytes (minimum 12 required)");
+
+            var result = ParseBxmlData(bxmlData);
+
+            if (Config.NoMetadata)
+                result = RemoveMetadataProperties(result);
+
+            return result;
+        }
+
+        private static byte[] DecodeInput(string input)
+        {
+            try
+            {
+                return Convert.FromBase64String(input);
+            }
+            catch (FormatException)
+            {
+                return ParseHexString(input);
+            }
+        }
+
+        private static bool PeekForLargeTree(byte[] bytes)
+        {
+            if (bytes.Length < 8) return false;
+
+            try
+            {
+                using var buffer = new MemoryStream(bytes);
+                using var reader = new BinaryReader(buffer);
+
+                reader.ReadBytes(4);
+                uint elementCount = reader.ReadUInt32();
+                return elementCount > 100;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool PeekForManyElements(byte[] bytes)
+        {
+            if (bytes.Length < 8) return false;
+
+            try
+            {
+                using var buffer = new MemoryStream(bytes);
+                using var reader = new BinaryReader(buffer);
+
+                reader.ReadBytes(4);
+                uint elementCount = reader.ReadUInt32();
+                return elementCount > 20;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static int EstimateElementSize(BxmlElement element, string[] stringTable)
+        {
+            var size = 20;
+
+            if (element.NameIndex < stringTable.Length)
+                size += stringTable[element.NameIndex].Length;
+
+            size += element.Attributes.Count * 8;
+
+            if (element.TextIndex.HasValue && element.TextIndex.Value < stringTable.Length)
+                size += stringTable[element.TextIndex.Value].Length;
+
+            foreach (var child in element.Children)
+                size += EstimateElementSize(child, stringTable);
+
+            return size;
+        }
+
+        private JToken HandleParsingError(Exception ex, string input)
+        {
+            if (Config.IgnoreErrors)
+            {
+                Console.WriteLine($"Warning: BXML parsing error ignored: {ex.Message}");
+                return new JObject
+                {
+                    ["error"] = ex.Message,
+                    ["raw"] = input.Length > 1000 ? string.Concat(input.AsSpan(0, 1000), "...") : input
+                };
+            }
+            throw new FormatException($"Invalid BXML: {ex.Message}", ex);
+        }
+
+        private JToken RemoveMetadataProperties(JToken token)
+        {
+            if (token is JObject obj)
+            {
+                var result = new JObject();
+                foreach (var prop in obj.Properties())
+                {
+                    if (!prop.Name.StartsWith("_"))
+                        result[prop.Name] = RemoveMetadataProperties(prop.Value);
+                }
+                return result;
+            }
+            else if (token is JArray array)
+            {
+                return new JArray(array.Select(RemoveMetadataProperties));
+            }
+
+            return token;
+        }
+
+        private static byte[] ParseHexString(string hex)
         {
             hex = hex.Replace("0x", "").Replace(" ", "").Replace("-", "");
 
             if (hex.Length % 2 != 0)
-            {
                 throw new FormatException("Invalid hex string length");
-            }
 
             var bytes = new byte[hex.Length / 2];
             for (int i = 0; i < bytes.Length; i++)
@@ -84,26 +399,16 @@ namespace FormatConverter.Bxml
             using var buffer = new MemoryStream(bxmlData);
             using var reader = new BinaryReader(buffer);
 
-            var signature = reader.ReadBytes(4);
-            string sigStr = Encoding.ASCII.GetString(signature);
-
-            if (sigStr != "BXML")
-            {
-                throw new FormatException($"Invalid BXML signature: '{sigStr}', expected 'BXML'");
-            }
+            ValidateSignature(reader);
 
             uint elementCount = reader.ReadUInt32();
 
             if (elementCount == 0)
-            {
                 return new JObject();
-            }
 
             var maxElements = Config.StrictMode ? 1000 : MAX_ELEMENT_COUNT;
             if (elementCount > maxElements)
-            {
                 throw new FormatException($"Element count {elementCount} exceeds maximum allowed {maxElements}");
-            }
 
             var elements = new List<BxmlElement>();
             for (int i = 0; i < elementCount; i++)
@@ -121,39 +426,38 @@ namespace FormatConverter.Bxml
             uint stringCount = reader.ReadUInt32();
             var maxStrings = Config.StrictMode ? 1000 : MAX_STRING_COUNT;
             if (stringCount > maxStrings)
-            {
                 throw new FormatException($"String count {stringCount} exceeds maximum allowed {maxStrings}");
-            }
 
             var stringTable = ReadStringTable(reader, stringCount);
 
             if (elements.Count > 0)
-            {
                 return ConvertBxmlElementToJson(elements[0], stringTable);
-            }
 
             return new JObject();
+        }
+
+        private static void ValidateSignature(BinaryReader reader)
+        {
+            var signature = reader.ReadBytes(4);
+            string sigStr = Encoding.ASCII.GetString(signature);
+
+            if (sigStr != "BXML")
+                throw new FormatException($"Invalid BXML signature: '{sigStr}', expected 'BXML'");
         }
 
         private BxmlElement ReadElement(BinaryReader reader, int depth)
         {
             var maxDepth = Config.MaxDepth ?? (Config.StrictMode ? 10 : 100);
             if (depth > maxDepth)
-            {
                 throw new FormatException($"Maximum nesting depth {maxDepth} exceeded");
-            }
 
             if (reader.BaseStream.Position >= reader.BaseStream.Length)
-            {
                 throw new FormatException("Unexpected end of stream while reading element");
-            }
 
             byte nodeType = reader.ReadByte();
 
             if (nodeType != 1)
-            {
                 throw new FormatException($"Expected element type 1, got {nodeType} at position {reader.BaseStream.Position - 1}");
-            }
 
             uint nameIndex = reader.ReadUInt32();
             var element = new BxmlElement
@@ -164,9 +468,7 @@ namespace FormatConverter.Bxml
             uint attrCount = reader.ReadUInt32();
             var maxAttrs = Config.StrictMode ? 100 : MAX_ATTRIBUTE_COUNT;
             if (attrCount > maxAttrs)
-            {
                 throw new FormatException($"Attribute count {attrCount} exceeds maximum allowed {maxAttrs}");
-            }
 
             for (int i = 0; i < attrCount; i++)
             {
@@ -189,9 +491,7 @@ namespace FormatConverter.Bxml
             uint childCount = reader.ReadUInt32();
             var maxChildren = Config.StrictMode ? 100 : MAX_CHILD_COUNT;
             if (childCount > maxChildren)
-            {
                 throw new FormatException($"Child count {childCount} exceeds maximum allowed {maxChildren}");
-            }
 
             for (int i = 0; i < childCount; i++)
             {
@@ -208,21 +508,15 @@ namespace FormatConverter.Bxml
             for (int i = 0; i < stringCount; i++)
             {
                 if (reader.BaseStream.Position >= reader.BaseStream.Length)
-                {
                     throw new FormatException($"Unexpected end of stream while reading string {i}");
-                }
 
                 uint stringLength = reader.ReadUInt32();
                 var maxLength = Config.StrictMode ? 10000 : MAX_STRING_LENGTH;
                 if (stringLength > maxLength)
-                {
                     throw new FormatException($"String {i} length {stringLength} exceeds maximum allowed {maxLength}");
-                }
 
                 if (reader.BaseStream.Position + stringLength > reader.BaseStream.Length)
-                {
                     throw new FormatException($"String {i} extends beyond stream boundary");
-                }
 
                 byte[] stringBytes = reader.ReadBytes((int)stringLength);
                 stringTable[i] = Encoding.UTF8.GetString(stringBytes);
@@ -231,7 +525,7 @@ namespace FormatConverter.Bxml
             return stringTable;
         }
 
-        private JToken ConvertBxmlElementToJson(BxmlElement element, string[] stringTable)
+        private JObject ConvertBxmlElementToJson(BxmlElement element, string[] stringTable)
         {
             string elementName = GetStringFromTable(element.NameIndex, stringTable, "unknown");
 
@@ -302,7 +596,7 @@ namespace FormatConverter.Bxml
             return json;
         }
 
-        private string GetElementType(BxmlElement element, string[] stringTable)
+        private static string GetElementType(BxmlElement element, string[] stringTable)
         {
             foreach (var attr in element.Attributes)
             {
@@ -315,7 +609,7 @@ namespace FormatConverter.Bxml
             return "string";
         }
 
-        private JToken GetElementValue(BxmlElement element, string[] stringTable, string type)
+        private JValue GetElementValue(BxmlElement element, string[] stringTable, string type)
         {
             if (element.TextIndex.HasValue)
             {
@@ -326,7 +620,7 @@ namespace FormatConverter.Bxml
             return type == "null" ? JValue.CreateNull() : new JValue("");
         }
 
-        private JToken ConvertValueByType(string value, string type)
+        private JValue ConvertValueByType(string value, string type)
         {
             return type switch
             {
@@ -341,10 +635,8 @@ namespace FormatConverter.Bxml
             };
         }
 
-        private string GetStringFromTable(uint index, string[] stringTable, string defaultValue)
-        {
-            return index < stringTable.Length ? stringTable[index] : defaultValue;
-        }
+        private static string GetStringFromTable(uint index, string[] stringTable, string defaultValue)
+            => index < stringTable.Length ? stringTable[index] : defaultValue;
 
         private object FormatNumber(double number)
         {

@@ -46,6 +46,8 @@ namespace FormatConverter
         [Option("sort-keys", HelpText = "Sort object keys alphabetically in output")]
         public bool SortKeys { get; set; }
 
+        #region JSON Options
+
         [Option("json-escape-unicode", HelpText = "Escape non-ASCII characters in JSON output")]
         public bool JsonEscapeUnicode { get; set; }
 
@@ -57,6 +59,10 @@ namespace FormatConverter
 
         [Option("json-single-quotes", HelpText = "Use single quotes instead of double quotes in JSON")]
         public bool JsonSingleQuotes { get; set; }
+
+        #endregion
+
+        #region XML Options
 
         [Option("xml-root", MetaValue = "NAME", HelpText = "Custom root element name for XML output")]
         public string? XmlRootElement { get; set; }
@@ -79,6 +85,10 @@ namespace FormatConverter
         [Option("xml-attributes", HelpText = "Convert simple properties to XML attributes instead of elements")]
         public bool XmlUseAttributes { get; set; }
 
+        #endregion
+
+        #region YAML Options
+
         [Option("yaml-flow-style", HelpText = "Use flow style (inline) for YAML output")]
         public bool YamlFlowStyle { get; set; }
 
@@ -94,6 +104,10 @@ namespace FormatConverter
         [Option("yaml-canonical", HelpText = "Use canonical YAML format")]
         public bool YamlCanonical { get; set; }
 
+        #endregion
+
+        #region TOML Options
+
         [Option("toml-array-of-tables", Default = true, HelpText = "Convert object arrays to TOML array of tables format ([[table]])")]
         public bool TomlArrayOfTables { get; set; } = true;
 
@@ -103,11 +117,60 @@ namespace FormatConverter
         [Option("toml-strict-types", Default = false, HelpText = "Enforce strict type conversion (fail if types cannot be represented in TOML)")]
         public bool TomlStrictTypes { get; set; } = false;
 
+        #endregion
+
+        #region MessagePack Options
+
+        [Option("msgpack-contractless", Default = true, HelpText = "Use contractless resolver for MessagePack (allows dynamic types)")]
+        public bool MessagePackUseContractless { get; set; } = true;
+
+        [Option("msgpack-lz4", HelpText = "Enable LZ4 compression for MessagePack output")]
+        public bool MessagePackLz4Compression { get; set; }
+
+        [Option("msgpack-old-spec", HelpText = "Use old MessagePack specification format")]
+        public bool MessagePackOldSpec { get; set; }
+
+        [Option("msgpack-array-chunk-size", Default = 100, MetaValue = "SIZE", HelpText = "Chunk size for streaming large MessagePack arrays")]
+        public int MessagePackArrayChunkSize { get; set; } = 100;
+
+        [Option("msgpack-map-chunk-size", Default = 50, MetaValue = "SIZE", HelpText = "Chunk size for streaming large MessagePack maps")]
+        public int MessagePackMapChunkSize { get; set; } = 50;
+
+        #endregion
+
+        #region CBOR Options
+
+        [Option("cbor-indefinite-length", Default = true, HelpText = "Allow indefinite-length arrays and maps in CBOR")]
+        public bool CborAllowIndefiniteLength { get; set; } = true;
+
+        [Option("cbor-multiple-content", HelpText = "Allow multiple top-level CBOR items in sequence")]
+        public bool CborAllowMultipleContent { get; set; }
+
+        [Option("cbor-canonical", HelpText = "Use canonical CBOR encoding (sorted keys, minimal encoding)")]
+        public bool CborCanonical { get; set; }
+
+        [Option("cbor-tags", HelpText = "Preserve CBOR semantic tags in conversion")]
+        public bool CborPreserveTags { get; set; }
+
+        [Option("cbor-datetime-tag", HelpText = "Use CBOR datetime tags (tag 0 or 1) for date values")]
+        public bool CborUseDateTimeTags { get; set; }
+
+        [Option("cbor-bignum", HelpText = "Use CBOR bignum tags (tag 2/3) for very large numbers")]
+        public bool CborUseBigNumTags { get; set; }
+
+        #endregion
+
+        #region Compression Options
+
         [Option("compress", MetaValue = "TYPE", HelpText = "Compress output using specified algorithm (gzip, deflate, brotli)")]
         public string? Compression { get; set; }
 
         [Option("compression-level", Default = 6, MetaValue = "LEVEL", HelpText = "Compression level (1-9, where 9 is maximum compression)")]
         public int CompressionLevel { get; set; } = 6;
+
+        #endregion
+
+        #region Validation Options
 
         [Option("validate", MetaValue = "SCHEMA", HelpText = "Validate input against specified schema file")]
         public string? SchemaFile { get; set; }
@@ -118,20 +181,32 @@ namespace FormatConverter
         [Option("ignore-errors", HelpText = "Continue processing even if non-critical errors occur")]
         public bool IgnoreErrors { get; set; }
 
+        #endregion
+
+        #region Streaming Options
+
         [Option("streaming", HelpText = "Use streaming parser for large files (reduces memory usage)")]
         public bool UseStreaming { get; set; }
 
         [Option("buffer-size", Default = 4096, MetaValue = "BYTES", HelpText = "Buffer size for streaming operations")]
         public int BufferSize { get; set; } = 4096;
 
+        #endregion
+
+        #region Format Options
+
         [Option("number-format", MetaValue = "FORMAT", HelpText = "Number format for output (decimal, hexadecimal, scientific)")]
         public string? NumberFormat { get; set; }
 
-        [Option("date-format", MetaValue = "FORMAT", HelpText = "Date format string (e.g., 'yyyy-MM-dd', 'ISO8601')")]
+        [Option("date-format", MetaValue = "FORMAT", HelpText = "Date format string (e.g., 'yyyy-MM-dd', 'ISO8601', 'unix')")]
         public string? DateFormat { get; set; }
 
         [Option("timezone", MetaValue = "TZ", HelpText = "Target timezone for date conversion (e.g., 'UTC', 'America/New_York')")]
         public string? Timezone { get; set; }
+
+        #endregion
+
+        #region Data Transformation Options
 
         [Option("array-wrap", HelpText = "Wrap single items in arrays when converting")]
         public bool ArrayWrap { get; set; }
@@ -141,5 +216,7 @@ namespace FormatConverter
 
         [Option("max-depth", MetaValue = "DEPTH", HelpText = "Maximum nesting depth for objects/arrays")]
         public int? MaxDepth { get; set; }
+
+        #endregion
     }
 }

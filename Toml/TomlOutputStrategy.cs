@@ -12,30 +12,216 @@ namespace FormatConverter.Toml
 
         public override string Serialize(JToken data)
         {
+            if (Config.UseStreaming)
+            {
+                return string.Join("", SerializeStream([data]));
+            }
+
+            return SerializeRegular(data);
+        }
+
+        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
+        {
+            if (!Config.UseStreaming)
+            {
+                yield return Serialize(new JArray(data));
+                yield break;
+            }
+
+            foreach (var token in data)
+            {
+                foreach (var chunk in StreamToken(token))
+                {
+                    yield return chunk;
+                }
+            }
+        }
+
+        private IEnumerable<string> StreamToken(JToken token)
+        {
+            var processed = ProcessDataBeforeSerialization(token);
+
+            if (processed.Type == JTokenType.Array)
+            {
+                return StreamArray((JArray)processed);
+            }
+            else if (processed.Type == JTokenType.Object)
+            {
+                return StreamObject((JObject)processed);
+            }
+            else
+            {
+                return [SerializeRegular(processed)];
+            }
+        }
+
+        private IEnumerable<string> StreamArray(JArray array)
+        {
+            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
+            var buffer = new List<JToken>();
+            var currentBufferSize = 0;
+            var totalProcessed = 0;
+            var totalItems = array.Count;
+
+            foreach (var item in array)
+            {
+                if (item.Type != JTokenType.Object)
+                {
+                    yield return SerializeRegular(item);
+                    continue;
+                }
+
+                var serializedItem = SerializeTomlObject((JObject)item, string.Empty);
+                var itemSizeInBytes = Encoding.UTF8.GetByteCount(serializedItem);
+
+                if (buffer.Count > 0 && currentBufferSize + itemSizeInBytes > bufferSize)
+                {
+                    yield return SerializeBufferedItems(buffer);
+                    buffer.Clear();
+                    currentBufferSize = 0;
+
+                    if (totalItems > 0 && totalProcessed % Math.Max(1, totalItems / 10) == 0)
+                    {
+                        var progress = (double)totalProcessed / totalItems * 100;
+                        Console.WriteLine($"Serialization progress: {progress:F1}%");
+                    }
+                }
+
+                buffer.Add(item);
+                currentBufferSize += itemSizeInBytes;
+                totalProcessed++;
+            }
+
+            if (buffer.Count > 0)
+            {
+                yield return SerializeBufferedItems(buffer);
+            }
+        }
+
+        private IEnumerable<string> StreamObject(JObject obj)
+        {
+            var properties = obj.Properties().ToList();
+            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
+            var maxPropertiesPerChunk = Math.Max(5, bufferSize / 1024);
+
+            var currentChunk = new JObject();
+            var processedCount = 0;
+            var totalProperties = properties.Count;
+
+            foreach (var prop in properties)
+            {
+                currentChunk[prop.Name] = prop.Value;
+                processedCount++;
+
+                if (processedCount >= maxPropertiesPerChunk)
+                {
+                    yield return SerializeRegular(currentChunk);
+                    currentChunk = new JObject();
+                    processedCount = 0;
+
+                    var progress = (double)processedCount / totalProperties * 100;
+                    if (progress % 10 < 1)
+                    {
+                        Console.WriteLine($"Object streaming progress: {progress:F1}%");
+                    }
+                }
+            }
+
+            if (processedCount > 0)
+            {
+                yield return SerializeRegular(currentChunk);
+            }
+        }
+
+        private string SerializeBufferedItems(List<JToken> items)
+        {
+            var sb = new StringBuilder();
+
+            foreach (var item in items)
+            {
+                if (item.Type == JTokenType.Object)
+                {
+                    sb.Append(SerializeTomlObject((JObject)item, string.Empty));
+                    sb.AppendLine();
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        private string SerializeRegular(JToken data)
+        {
+            var processed = ProcessDataBeforeSerialization(data);
+
             try
             {
                 _output.Clear();
                 _writtenTables.Clear();
 
-                if (data is JObject obj)
+                if (processed is JObject obj)
                 {
-                    WriteObject(obj, string.Empty, 0);
+                    return SerializeTomlObject(obj, string.Empty);
                 }
                 else
                 {
                     throw new FormatException("TOML root must be an object/table");
                 }
-
-                return _output.ToString().TrimEnd();
             }
             catch (Exception ex)
             {
-                if (Config.IgnoreErrors)
-                {
-                    return $"# Error serializing to TOML: {ex.Message}\n{data}";
-                }
-                throw new FormatException($"TOML serialization failed: {ex.Message}", ex);
+                return HandleSerializationError(ex, processed);
             }
+        }
+
+        private string SerializeTomlObject(JObject obj, string sectionPath)
+        {
+            _output.Clear();
+            _writtenTables.Clear();
+            WriteObject(obj, sectionPath, 0);
+            return _output.ToString().TrimEnd();
+        }
+
+        private JToken ProcessDataBeforeSerialization(JToken data)
+        {
+            if (Config.SortKeys)
+                data = SortKeysRecursively(data);
+
+            if (Config.ArrayWrap && data.Type != JTokenType.Array)
+                return new JArray(data);
+
+            return data;
+        }
+
+        private string HandleSerializationError(Exception ex, JToken data)
+        {
+            if (Config.IgnoreErrors)
+            {
+                Console.WriteLine($"Warning: TOML serialization error ignored: {ex.Message}");
+                return CreateErrorToml(ex.Message, data);
+            }
+            throw new FormatException($"TOML serialization failed: {ex.Message}", ex);
+        }
+
+        private static string CreateErrorToml(string errorMessage, JToken data)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine($"# Error serializing to TOML: {errorMessage}");
+            sb.AppendLine($"# Timestamp: {DateTime.UtcNow:O}");
+            sb.AppendLine();
+            sb.AppendLine("# Original data (as comment):");
+
+            var dataStr = data.ToString();
+            if (dataStr.Length > 500)
+            {
+                dataStr = string.Concat(dataStr.AsSpan(0, 500), "...");
+            }
+
+            foreach (var line in dataStr.Split('\n'))
+            {
+                sb.AppendLine($"# {line}");
+            }
+
+            return sb.ToString();
         }
 
         private void WriteObject(JObject obj, string sectionPath, int depth)
@@ -65,8 +251,12 @@ namespace FormatConverter.Toml
                 }
                 catch (FormatException) when (!Config.TomlStrictTypes)
                 {
-                    Console.WriteLine($"Warning: Skipping property '{prop.Name}' - incompatible with TOML format");
-                    continue;
+                    if (Config.IgnoreErrors)
+                    {
+                        Console.WriteLine($"Warning: Skipping property '{prop.Name}' - incompatible with TOML format");
+                        continue;
+                    }
+                    throw;
                 }
             }
 
@@ -184,8 +374,6 @@ namespace FormatConverter.Toml
                 return Config.NumberFormat.ToLower() switch
                 {
                     "hexadecimal" when number is long l => $"0x{l:X}",
-                    "octal" when number is long l => $"0o{Convert.ToString(l, 8)}",
-                    "binary" when number is long l => $"0b{Convert.ToString(l, 2)}",
                     "scientific" when number is double d => d.ToString("E", CultureInfo.InvariantCulture),
                     _ => number.ToString()
                 };
@@ -229,7 +417,7 @@ namespace FormatConverter.Toml
             return "[\n" + indent + string.Join(",\n" + indent, items) + "\n]";
         }
 
-        private bool IsSimpleArrayItem(JToken item)
+        private static bool IsSimpleArrayItem(JToken item)
         {
             return item.Type switch
             {
@@ -271,7 +459,7 @@ namespace FormatConverter.Toml
             };
         }
 
-        private bool IsArrayOfTables(JArray array)
+        private static bool IsArrayOfTables(JArray array)
         {
             return array.All(item => item.Type == JTokenType.Object);
         }
@@ -290,6 +478,26 @@ namespace FormatConverter.Toml
                      .Replace("\n", "\\n")
                      .Replace("\r", "\\r")
                      .Replace("\t", "\\t");
+        }
+
+        private JToken SortKeysRecursively(JToken token)
+        {
+            return token.Type switch
+            {
+                JTokenType.Object => SortJObject((JObject)token),
+                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
+                _ => token
+            };
+        }
+
+        private JObject SortJObject(JObject obj)
+        {
+            var sorted = new JObject();
+            foreach (var property in obj.Properties().OrderBy(p => p.Name))
+            {
+                sorted[property.Name] = SortKeysRecursively(property.Value);
+            }
+            return sorted;
         }
     }
 }

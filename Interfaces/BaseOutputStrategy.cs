@@ -17,5 +17,7 @@ namespace FormatConverter.Interfaces
         }
 
         public abstract string Serialize(JToken data);
+
+        public abstract IEnumerable<string> SerializeStream(IEnumerable<JToken> data);
     }
 }
