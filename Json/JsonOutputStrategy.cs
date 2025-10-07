@@ -7,169 +7,125 @@ namespace FormatConverter.Json
 {
     public class JsonOutputStrategy : BaseOutputStrategy
     {
+        private const int DEFAULT_CHUNK_SIZE = 100;
+
         public override string Serialize(JToken data)
-        {
-            if (Config.UseStreaming)
-            {
-                return string.Join("", SerializeStream([data]));
-            }
-
-            return SerializeRegular(data);
-        }
-
-        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
-        {
-            if (!Config.UseStreaming)
-            {
-                yield return Serialize(new JArray(data));
-                yield break;
-            }
-
-            foreach (var token in data)
-            {
-                foreach (var chunk in StreamToken(token))
-                {
-                    yield return chunk;
-                }
-            }
-        }
-
-        private IEnumerable<string> StreamToken(JToken token)
-        {
-            var processed = ProcessDataBeforeSerialization(token);
-            var settings = CreateJsonSerializerSettings();
-
-            return processed.Type switch
-            {
-                JTokenType.Array => StreamChunked(((JArray)processed).Children(), settings, "[", "]"),
-                JTokenType.Object => StreamChunked(((JObject)processed).Properties(), settings, "{", "}"),
-                _ => StreamSingle(processed, settings)
-            };
-        }
-
-        private IEnumerable<string> StreamChunked<T>(
-            IEnumerable<T> items,
-            JsonSerializerSettings settings,
-            string open,
-            string close) where T : JToken
-        {
-            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
-            var serializer = JsonSerializer.Create(settings);
-
-            yield return NeedsPretty() ? open + "\n" : open;
-
-            bool first = true;
-            var buffer = new List<T>();
-            var currentBufferSize = 0;
-            var totalProcessed = 0;
-            var itemCount = items is ICollection<T> collection ? collection.Count : -1;
-
-            foreach (var item in items)
-            {
-                var serializedItem = SerializeToken(item, serializer);
-                var itemSizeInBytes = Encoding.UTF8.GetByteCount(serializedItem);
-
-                if (buffer.Count > 0 && currentBufferSize + itemSizeInBytes > bufferSize)
-                {
-                    yield return SerializeChunk(buffer, serializer, ref first);
-                    buffer.Clear();
-                    currentBufferSize = 0;
-
-                    if (itemCount > 0 && totalProcessed % Math.Max(1, itemCount / 10) == 0)
-                    {
-                        var progress = (double)totalProcessed / itemCount * 100;
-                        Console.WriteLine($"Serialization progress: {progress:F1}%");
-                    }
-                }
-
-                buffer.Add(item);
-                currentBufferSize += itemSizeInBytes;
-                totalProcessed++;
-            }
-
-            if (buffer.Count > 0)
-            {
-                yield return SerializeChunk(buffer, serializer, ref first);
-            }
-
-            yield return NeedsPretty() ? "\n" + close : close;
-        }
-
-        private string SerializeChunk<T>(
-            List<T> items,
-            JsonSerializer serializer,
-            ref bool first) where T : JToken
-        {
-            var sb = new StringBuilder();
-
-            for (int i = 0; i < items.Count; i++)
-            {
-                if (!first || i > 0)
-                {
-                    sb.Append(",");
-                    if (NeedsPretty())
-                    {
-                        sb.Append("\n").Append(new string(' ', Config.IndentSize ?? 2));
-                    }
-                }
-                else if (NeedsPretty())
-                {
-                    sb.Append(new string(' ', Config.IndentSize ?? 2));
-                }
-
-                try
-                {
-                    var serializedItem = SerializeToken(items[i], serializer);
-                    sb.Append(serializedItem);
-                }
-                catch (Exception ex)
-                {
-                    if (Config.IgnoreErrors)
-                    {
-                        sb.Append(CreateErrorJsonForChunk(ex.Message, items.Count));
-                    }
-                    else
-                    {
-                        throw new FormatException($"Error serializing item {i} in chunk: {ex.Message}", ex);
-                    }
-                }
-            }
-
-            first = false;
-            return sb.ToString();
-        }
-
-        private IEnumerable<string> StreamSingle(JToken token, JsonSerializerSettings settings)
-        {
-            IEnumerable<string> Iterator()
-            {
-                var serialized = SerializeToken(token, JsonSerializer.Create(settings));
-                yield return serialized;
-            }
-
-            try
-            {
-                return Iterator();
-            }
-            catch (Exception ex)
-            {
-                if (Config.IgnoreErrors)
-                {
-                    return [CreateErrorJsonForChunk(ex.Message, 1)];
-                }
-                else
-                {
-                    throw new FormatException($"Error serializing single token: {ex.Message}", ex);
-                }
-            }
-        }
-
-        private string SerializeRegular(JToken data)
         {
             var processed = ProcessDataBeforeSerialization(data);
             var settings = CreateJsonSerializerSettings();
 
             return SerializeToken(processed, JsonSerializer.Create(settings));
+        }
+
+        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
+        {
+            var settings = CreateJsonSerializerSettings();
+            var serializer = JsonSerializer.Create(settings);
+
+            if (data is JArray array)
+            {
+                foreach (var chunk in StreamArray(array, serializer))
+                    yield return chunk;
+            }
+            else if (data.All(t => t.Type == JTokenType.Object))
+            {
+                foreach (var chunk in StreamObjectSequence(data, serializer))
+                    yield return chunk;
+            }
+            else
+            {
+                yield return Serialize(new JArray(data.ToArray()));
+            }
+        }
+
+        private IEnumerable<string> StreamArray(JArray array, JsonSerializer serializer)
+        {
+            var chunkSize = GetChunkSize();
+            var needsPretty = NeedsPretty();
+            var items = array.Children().ToList();
+
+            yield return needsPretty ? "[\n" : "[";
+
+            for (int i = 0; i < items.Count; i += chunkSize)
+            {
+                var chunkItems = items.Skip(i).Take(chunkSize).ToList();
+                var chunkJson = SerializeChunk(chunkItems, serializer, i > 0);
+
+                if (!string.IsNullOrEmpty(chunkJson))
+                {
+                    yield return chunkJson;
+                }
+            }
+
+            yield return needsPretty ? "\n]" : "]";
+        }
+
+        private IEnumerable<string> StreamObjectSequence(IEnumerable<JToken> objects, JsonSerializer serializer)
+        {
+            var chunkSize = GetChunkSize();
+            var needsPretty = NeedsPretty();
+            var buffer = new List<JToken>();
+            var firstChunk = true;
+
+            yield return needsPretty ? "[\n" : "[";
+
+            foreach (var obj in objects)
+            {
+                buffer.Add(obj);
+
+                if (buffer.Count >= chunkSize)
+                {
+                    yield return SerializeChunk(buffer, serializer, !firstChunk);
+                    buffer.Clear();
+                    firstChunk = false;
+                }
+            }
+
+            if (buffer.Count > 0)
+            {
+                yield return SerializeChunk(buffer, serializer, !firstChunk);
+            }
+
+            yield return needsPretty ? "\n]" : "]";
+        }
+
+        private string SerializeChunk(List<JToken> items, JsonSerializer serializer, bool includeComma)
+        {
+            if (items.Count == 0) return string.Empty;
+
+            var sb = new StringBuilder();
+            var needsPretty = NeedsPretty();
+            var indent = needsPretty ? new string(' ', Config.IndentSize ?? 2) : "";
+
+            if (includeComma)
+            {
+                sb.Append(",");
+                if (needsPretty) sb.Append("\n");
+            }
+
+            for (int i = 0; i < items.Count; i++)
+            {
+                if (i > 0)
+                {
+                    sb.Append(",");
+                    if (needsPretty) sb.Append("\n");
+                }
+
+                if (needsPretty) sb.Append(indent);
+
+                try
+                {
+                    var itemJson = SerializeToken(items[i], serializer);
+                    sb.Append(itemJson);
+                }
+                catch (Exception ex) when (Config.IgnoreErrors)
+                {
+                    var errorJson = CreateErrorJson(ex.Message, items[i]);
+                    sb.Append(errorJson);
+                }
+            }
+
+            return sb.ToString();
         }
 
         private string SerializeToken(JToken token, JsonSerializer serializer)
@@ -178,26 +134,38 @@ namespace FormatConverter.Json
             using var writer = new JsonTextWriter(sw);
 
             ConfigureJsonWriter(writer);
-            serializer.Serialize(writer, token);
 
-            var result = sw.ToString();
-            return (Config.JsonSingleQuotes && !Config.Minify)
-                ? ConvertToSingleQuotes(result)
-                : result;
+            try
+            {
+                serializer.Serialize(writer, token);
+                var result = sw.ToString();
+
+                return Config.JsonSingleQuotes && !Config.Minify
+                    ? ConvertToSingleQuotes(result)
+                    : result;
+            }
+            catch (Exception ex) when (Config.IgnoreErrors)
+            {
+                return CreateErrorJson(ex.Message, token);
+            }
         }
 
         private JToken ProcessDataBeforeSerialization(JToken data)
         {
+            var result = data;
+
             if (Config.SortKeys)
-                data = SortKeysRecursively(data);
+                result = SortKeysRecursively(result);
 
-            if (Config.ArrayWrap && data.Type != JTokenType.Array)
-                return new JArray(data);
+            if (Config.ArrayWrap && result.Type != JTokenType.Array)
+                result = new JArray(result);
 
-            return data;
+            return result;
         }
 
         private bool NeedsPretty() => !Config.Minify && Config.PrettyPrint;
+
+        private int GetChunkSize() => Config.ChunkSize > 0 ? Config.ChunkSize : DEFAULT_CHUNK_SIZE;
 
         private JToken SortKeysRecursively(JToken token)
         {
@@ -258,16 +226,14 @@ namespace FormatConverter.Json
         }
 
         private static string ConvertToSingleQuotes(string jsonString)
-        {
-            return jsonString.Replace("\"", "'");
-        }
+            => jsonString.Replace("\"", "'");
 
-        private string CreateErrorJsonForChunk(string errorMessage, int count)
+        private string CreateErrorJson(string errorMessage, JToken originalToken)
         {
             var errorObj = new JObject
             {
                 ["error"] = errorMessage,
-                ["itemCount"] = count,
+                ["original_type"] = originalToken.Type.ToString(),
                 ["timestamp"] = DateTime.UtcNow.ToString("O")
             };
 

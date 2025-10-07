@@ -84,7 +84,6 @@ If you omit `-o <output-file>`, the tool auto-generates one with the correct ext
 - `--strict` → fail on warnings
 - `--ignore-errors` → keep going even on non-critical errors
 - `--streaming` → stream large files
-- `--buffer-size <bytes>` (default: 4096)
 - `--number-format <decimal|hexadecimal|scientific>`
 - `--date-format <format>` (e.g. yyyy-MM-dd, ISO8601)
 - `--timezone <tz>` (e.g. UTC, America/New_York)

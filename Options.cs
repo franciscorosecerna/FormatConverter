@@ -188,8 +188,8 @@ namespace FormatConverter
         [Option("streaming", HelpText = "Use streaming parser for large files (reduces memory usage)")]
         public bool UseStreaming { get; set; }
 
-        [Option("buffer-size", Default = 4096, MetaValue = "BYTES", HelpText = "Buffer size for streaming operations")]
-        public int BufferSize { get; set; } = 4096;
+        [Option("chunk-size", Default = 100 ,HelpText = "Number of items per chunk when streaming")]
+        public int ChunkSize { get; set; } = 100;
 
         #endregion
 

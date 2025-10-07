@@ -62,7 +62,7 @@ namespace FormatConverter
         public bool StrictMode { get; set; }
         public bool IgnoreErrors { get; set; }
         public bool UseStreaming { get; set; }
-        public int BufferSize { get; set; } = 4096;
+        public int ChunkSize { get; set; } = 100;
         public string? NumberFormat { get; set; }
         public string? DateFormat { get; set; }
         public string? Timezone { get; set; }
@@ -80,13 +80,13 @@ namespace FormatConverter
                 NoMetadata = options.NoMetadata,
                 SortKeys = options.SortKeys,
 
-                // JSON
+                //JSON
                 JsonEscapeUnicode = options.JsonEscapeUnicode,
                 JsonTrailingCommas = options.JsonTrailingCommas,
                 JsonQuoteNames = options.JsonQuoteNames,
                 JsonSingleQuotes = options.JsonSingleQuotes,
 
-                // XML
+                //XML
                 XmlRootElement = options.XmlRootElement,
                 XmlNamespace = options.XmlNamespace,
                 XmlNamespacePrefix = options.XmlNamespacePrefix,
@@ -95,26 +95,26 @@ namespace FormatConverter
                 XmlUseCData = options.XmlUseCData,
                 XmlUseAttributes = options.XmlUseAttributes,
 
-                // YAML
+                //YAML
                 YamlFlowStyle = options.YamlFlowStyle,
                 YamlExplicitStart = options.YamlExplicitStart,
                 YamlExplicitEnd = options.YamlExplicitEnd,
                 YamlQuoteStrings = options.YamlQuoteStrings,
                 YamlCanonical = options.YamlCanonical,
 
-                // TOML
+                //TOML
                 TomlArrayOfTables = options.TomlArrayOfTables,
                 TomlMultilineStrings = options.TomlMultilineStrings,
                 TomlStrictTypes = options.TomlStrictTypes,
 
-                // MessagePack
+                //MessagePack
                 MessagePackUseContractless = options.MessagePackUseContractless,
                 MessagePackLz4Compression = options.MessagePackLz4Compression,
                 MessagePackOldSpec = options.MessagePackOldSpec,
                 ArrayChunkSize = options.MessagePackArrayChunkSize,
                 MapChunkSize = options.MessagePackMapChunkSize,
 
-                // CBOR
+                //CBOR
                 CborAllowIndefiniteLength = options.CborAllowIndefiniteLength,
                 CborAllowMultipleContent = options.CborAllowMultipleContent,
                 CborCanonical = options.CborCanonical,
@@ -122,14 +122,14 @@ namespace FormatConverter
                 CborUseDateTimeTags = options.CborUseDateTimeTags,
                 CborUseBigNumTags = options.CborUseBigNumTags,
 
-                // Other
+                //Other
                 Compression = options.Compression,
                 CompressionLevel = options.CompressionLevel,
                 SchemaFile = options.SchemaFile,
                 StrictMode = options.StrictMode,
                 IgnoreErrors = options.IgnoreErrors,
                 UseStreaming = options.UseStreaming,
-                BufferSize = options.BufferSize,
+                ChunkSize = options.ChunkSize,
                 NumberFormat = options.NumberFormat,
                 DateFormat = options.DateFormat,
                 Timezone = options.Timezone,
@@ -188,11 +188,6 @@ namespace FormatConverter
             if (IndentSize < 0)
             {
                 throw new ArgumentException("Indent size cannot be negative");
-            }
-
-            if (BufferSize <= 0)
-            {
-                throw new ArgumentException("Buffer size must be positive");
             }
 
             if (CompressionLevel < 1 || CompressionLevel > 9)
@@ -261,7 +256,7 @@ namespace FormatConverter
 
             if (SortKeys) sb.AppendLine("  Sort Keys: enabled");
             if (NoMetadata) sb.AppendLine("  Strip Metadata: enabled");
-            if (UseStreaming) sb.AppendLine($"  Streaming: enabled (buffer: {BufferSize} bytes)");
+            if (UseStreaming) sb.AppendLine($"  Streaming: enabled");
             if (!string.IsNullOrEmpty(Compression)) sb.AppendLine($"  Compression: {Compression} (level {CompressionLevel})");
 
             if (MessagePackLz4Compression) sb.AppendLine("  MessagePack: LZ4 compression enabled");
