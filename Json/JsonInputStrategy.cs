@@ -53,7 +53,7 @@ namespace FormatConverter.Json
             try
             {
                 fileStream = File.OpenRead(path);
-                streamReader = new StreamReader(fileStream, Encoding.UTF8);
+                streamReader = new StreamReader(fileStream, Config.Encoding, true);
                 jsonReader = new JsonTextReader(streamReader)
                 {
                     SupportMultipleContent = true,

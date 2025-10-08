@@ -55,5 +55,43 @@ namespace FormatConverter.Interfaces
                 .OrderBy(p => p.Name, StringComparer.Ordinal)
                 .Select(p => new JProperty(p.Name, SortKeysRecursively(p.Value))));
         }
+
+        protected string FormatValue(object value)
+        {
+            if (value == null) return string.Empty;
+
+            return value switch
+            {
+                DateTime dt => FormatDateTime(dt),
+                double d when !string.IsNullOrEmpty(Config.NumberFormat) => FormatNumber(d),
+                float f when !string.IsNullOrEmpty(Config.NumberFormat) => FormatNumber(f),
+                decimal m when !string.IsNullOrEmpty(Config.NumberFormat) => FormatNumber((double)m),
+                _ => value.ToString() ?? string.Empty
+            };
+        }
+
+        protected string FormatDateTime(DateTime dateTime)
+        {
+            if (!string.IsNullOrEmpty(Config.DateFormat))
+            {
+                return Config.DateFormat.ToLower() switch
+                {
+                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    _ => dateTime.ToString(Config.DateFormat)
+                };
+            }
+
+            return dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fff");
+        }
+
+        protected string FormatNumber(double number)
+        {
+            return Config.NumberFormat?.ToLower() switch
+            {
+                "hexadecimal" => $"0x{(long)number:X}",
+                "scientific" => number.ToString("E"),
+                _ => number.ToString()
+            };
+        }
     }
 }

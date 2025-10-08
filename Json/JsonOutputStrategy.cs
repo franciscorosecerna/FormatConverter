@@ -8,7 +8,6 @@ namespace FormatConverter.Json
     public class JsonOutputStrategy : BaseOutputStrategy
     {
         private const int DEFAULT_CHUNK_SIZE = 100;
-        private readonly StringBuilder _chunkBuilder = new(4096);
 
         public override string Serialize(JToken data)
         {
@@ -66,40 +65,39 @@ namespace FormatConverter.Json
         {
             if (items.Count == 0) return string.Empty;
 
-            _chunkBuilder.Clear();
-
+            var chunkBuilder = new StringBuilder();
             var needsPretty = NeedsPretty();
             var indent = needsPretty ? new string(' ', Config.IndentSize ?? 2) : "";
 
             if (includeComma)
             {
-                _chunkBuilder.Append(",");
-                if (needsPretty) _chunkBuilder.Append('\n');
+                chunkBuilder.Append(",");
+                if (needsPretty) chunkBuilder.Append('\n');
             }
 
             for (int i = 0; i < items.Count; i++)
             {
                 if (i > 0)
                 {
-                    _chunkBuilder.Append(",");
-                    if (needsPretty) _chunkBuilder.Append('\n');
+                    chunkBuilder.Append(",");
+                    if (needsPretty) chunkBuilder.Append('\n');
                 }
 
-                if (needsPretty) _chunkBuilder.Append(indent);
+                if (needsPretty) chunkBuilder.Append(indent);
 
                 try
                 {
                     var itemJson = SerializeToken(items[i], serializer);
-                    _chunkBuilder.Append(itemJson);
+                    chunkBuilder.Append(itemJson);
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
                     var errorJson = CreateErrorJson(ex.Message, items[i]);
-                    _chunkBuilder.Append(errorJson);
+                    chunkBuilder.Append(errorJson);
                 }
             }
 
-            return _chunkBuilder.ToString();
+            return chunkBuilder.ToString();
         }
 
         private string SerializeToken(JToken token, JsonSerializer serializer)
@@ -217,7 +215,7 @@ namespace FormatConverter.Json
             {
                 ["error"] = errorMessage,
                 ["original_type"] = originalToken.Type.ToString(),
-                ["timestamp"] = DateTime.UtcNow.ToString("O")
+                ["timestamp"] = FormatDateTime(DateTime.UtcNow)
             };
 
             return Config.Minify

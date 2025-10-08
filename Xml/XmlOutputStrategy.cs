@@ -1,6 +1,8 @@
 ﻿using FormatConverter.Interfaces;
 using Newtonsoft.Json.Linq;
+using System.Security;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -8,270 +10,252 @@ namespace FormatConverter.Xml
 {
     public class XmlOutputStrategy : BaseOutputStrategy
     {
+        private const int DEFAULT_CHUNK_SIZE = 100;
+
         public override string Serialize(JToken data)
         {
-            if (Config.UseStreaming)
-            {
-                return string.Join("", SerializeStream([data]));
-            }
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
 
-            return SerializeRegular(data);
-        }
-
-        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
-        {
-            if (!Config.UseStreaming)
-            {
-                yield return Serialize(new JArray(data));
-                yield break;
-            }
-
-            foreach (var token in data)
-            {
-                foreach (var chunk in StreamToken(token))
-                {
-                    yield return chunk;
-                }
-            }
-        }
-
-        private IEnumerable<string> StreamToken(JToken token)
-        {
-            var processed = ProcessDataBeforeSerialization(token);
-
-            return processed.Type switch
-            {
-                JTokenType.Array => StreamArray((JArray)processed),
-                JTokenType.Object => StreamObject((JObject)processed),
-                _ => StreamSingle(processed)
-            };
-        }
-
-        private IEnumerable<string> StreamArray(JArray array)
-        {
-            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
-            var rootName = Config.XmlRootElement ?? "root";
-
-            yield return CreateXmlHeader();
-            yield return $"<{rootName}>";
-            if (NeedsPretty()) yield return "\n";
-
-            var buffer = new List<JToken>();
-            var currentBufferSize = 0;
-            var totalProcessed = 0;
-            var itemCount = array.Count;
-
-            foreach (var item in array)
-            {
-                var xmlContent = SerializeTokenToXmlContent(item, "item");
-                var itemSizeInBytes = Encoding.UTF8.GetByteCount(xmlContent);
-
-                if (buffer.Count > 0 && currentBufferSize + itemSizeInBytes > bufferSize)
-                {
-                    yield return SerializeArrayChunk(buffer);
-                    buffer.Clear();
-                    currentBufferSize = 0;
-
-                    if (itemCount > 0 && totalProcessed % Math.Max(1, itemCount / 10) == 0)
-                    {
-                        var progress = (double)totalProcessed / itemCount * 100;
-                        Console.WriteLine($"XML Array serialization progress: {progress:F1}%");
-                    }
-                }
-
-                buffer.Add(item);
-                currentBufferSize += itemSizeInBytes;
-                totalProcessed++;
-            }
-
-            if (buffer.Count > 0)
-            {
-                yield return SerializeArrayChunk(buffer);
-            }
-
-            if (NeedsPretty()) yield return "\n";
-            yield return $"</{rootName}>";
-        }
-
-        private IEnumerable<string> StreamObject(JObject obj)
-        {
-            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
-            var rootName = Config.XmlRootElement ?? "root";
-            var maxPropertiesPerChunk = Math.Max(10, bufferSize / 1024);
-
-            yield return CreateXmlHeader();
-            yield return CreateOpeningTag(rootName);
-            if (NeedsPretty()) yield return "\n";
-
-            var propertyBuffer = new List<JProperty>();
-            var currentBufferSize = 0;
-            var totalProcessed = 0;
-            var propertyCount = obj.Count;
-            var properties = Config.SortKeys ? obj.Properties().OrderBy(p => p.Name) : obj.Properties();
-
-            foreach (var property in properties)
-            {
-                var xmlContent = SerializePropertyToXml(property);
-                var propertySizeInBytes = Encoding.UTF8.GetByteCount(xmlContent);
-
-                if (propertyBuffer.Count > 0 &&
-                    (currentBufferSize + propertySizeInBytes > bufferSize ||
-                     propertyBuffer.Count >= maxPropertiesPerChunk))
-                {
-                    yield return SerializeObjectChunk(propertyBuffer);
-                    propertyBuffer.Clear();
-                    currentBufferSize = 0;
-
-                    if (propertyCount > 0 && totalProcessed % Math.Max(1, propertyCount / 10) == 0)
-                    {
-                        var progress = (double)totalProcessed / propertyCount * 100;
-                        Console.WriteLine($"XML Object serialization progress: {progress:F1}%");
-                    }
-                }
-
-                propertyBuffer.Add(property);
-                currentBufferSize += propertySizeInBytes;
-                totalProcessed++;
-            }
-
-            if (propertyBuffer.Count > 0)
-            {
-                yield return SerializeObjectChunk(propertyBuffer);
-            }
-
-            if (NeedsPretty()) yield return "\n";
-            yield return $"</{rootName}>";
-        }
-
-        private IEnumerable<string> StreamSingle(JToken token)
-        {
-            IEnumerable<string> Iterator()
-            {
-                var rootName = Config.XmlRootElement ?? "root";
-                yield return CreateXmlHeader();
-                yield return SerializeTokenToXmlContent(token, rootName);
-            }
-
-            try
-            {
-                return Iterator();
-            }
-            catch (Exception ex)
-            {
-                if (Config.IgnoreErrors)
-                {
-                    return [CreateErrorXml(ex.Message, 1)];
-                }
-                else
-                {
-                    throw new FormatException($"Error serializing single token to XML: {ex.Message}", ex);
-                }
-            }
-        }
-
-        private string SerializeArrayChunk(List<JToken> items)
-        {
-            var sb = new StringBuilder();
-            var indent = NeedsPretty() ? new string(' ', Config.IndentSize ?? 2) : "";
-
-            for (int i = 0; i < items.Count; i++)
-            {
-                try
-                {
-                    if (NeedsPretty() && i > 0) sb.Append("\n");
-                    if (NeedsPretty()) sb.Append(indent);
-
-                    sb.Append(SerializeTokenToXmlContent(items[i], "item"));
-                }
-                catch (Exception ex)
-                {
-                    if (Config.IgnoreErrors)
-                    {
-                        sb.Append(CreateErrorXmlElement($"item_{i}", ex.Message));
-                    }
-                    else
-                    {
-                        throw new FormatException($"Error serializing array item {i}: {ex.Message}", ex);
-                    }
-                }
-            }
-
-            return sb.ToString();
-        }
-
-        private string SerializeObjectChunk(List<JProperty> properties)
-        {
-            var sb = new StringBuilder();
-            var indent = NeedsPretty() ? new string(' ', Config.IndentSize ?? 2) : "";
-
-            for (int i = 0; i < properties.Count; i++)
-            {
-                try
-                {
-                    if (NeedsPretty() && i > 0) sb.Append("\n");
-                    if (NeedsPretty()) sb.Append(indent);
-
-                    sb.Append(SerializePropertyToXml(properties[i]));
-                }
-                catch (Exception ex)
-                {
-                    if (Config.IgnoreErrors)
-                    {
-                        sb.Append(CreateErrorXmlElement(SanitizeElementName(properties[i].Name), ex.Message));
-                    }
-                    else
-                    {
-                        throw new FormatException($"Error serializing property {properties[i].Name}: {ex.Message}", ex);
-                    }
-                }
-            }
-
-            return sb.ToString();
-        }
-
-        private string SerializeRegular(JToken data)
-        {
             var processed = ProcessDataBeforeSerialization(data);
 
             try
             {
-                var rootName = Config.XmlRootElement ?? "root";
-                var root = new XElement(rootName);
-
-                ConfigureNamespace(root);
-                ConvertObjectToXElement(processed, root);
-
-                var doc = new XDocument();
-                if (Config.XmlIncludeDeclaration)
-                {
-                    doc.Declaration = new XDeclaration("1.0", Config.Encoding.WebName, Config.XmlStandalone ? "yes" : null);
-                }
-
-                doc.Add(root);
-                return SerializeXDocument(doc);
+                return SerializeToXml(processed);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (Config.IgnoreErrors)
             {
-                if (Config.IgnoreErrors)
-                {
-                    return CreateErrorXml(ex.Message, 1);
-                }
-                throw new FormatException($"XML serialization failed: {ex.Message}", ex);
+                return CreateErrorXml(ex.Message);
             }
         }
 
-        private string SerializeXDocument(XDocument doc)
+        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
         {
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+
+            foreach (var chunk in StreamTokens(data))
+                yield return chunk;
+        }
+
+        private IEnumerable<string> StreamTokens(IEnumerable<JToken> tokens)
+        {
+            var chunkSize = GetChunkSize();
+            var needsPretty = NeedsPretty();
+            var buffer = new List<JToken>();
+            var firstChunk = true;
+            var rootName = SanitizeElementName(Config.XmlRootElement ?? "root");
             var settings = CreateXmlWriterSettings();
 
+            yield return CreateXmlHeader();
+            yield return CreateOpeningTag(rootName);
+            if (needsPretty) yield return "\n";
+
+            foreach (var token in tokens)
+            {
+                buffer.Add(token);
+
+                if (buffer.Count >= chunkSize)
+                {
+                    yield return SerializeChunk(buffer, !firstChunk, settings);
+                    buffer.Clear();
+                    firstChunk = false;
+                }
+            }
+
+            if (buffer.Count > 0)
+            {
+                yield return SerializeChunk(buffer, !firstChunk, settings);
+            }
+
+            if (needsPretty) yield return "\n";
+            yield return $"</{rootName}>";
+        }
+
+        private string SerializeChunk(List<JToken> items, bool includeNewline, XmlWriterSettings settings)
+        {
+            if (items.Count == 0) return string.Empty;
+
+            var chunkBuilder = new StringBuilder();
+            var needsPretty = NeedsPretty();
+            var indent = needsPretty ? new string(' ', Config.IndentSize ?? 2) : "";
+
+            for (int i = 0; i < items.Count; i++)
+            {
+                if ((includeNewline || i > 0) && needsPretty)
+                {
+                    chunkBuilder.Append('\n');
+                }
+
+                if (needsPretty) chunkBuilder.Append(indent);
+
+                try
+                {
+                    var itemXml = SerializeTokenToXml(items[i], "item", settings);
+                    chunkBuilder.Append(itemXml);
+                }
+                catch (Exception ex) when (Config.IgnoreErrors)
+                {
+                    var errorXml = CreateSafeErrorXmlElement($"item_{i}", ex.Message);
+                    chunkBuilder.Append(errorXml);
+                }
+            }
+
+            return chunkBuilder.ToString();
+        }
+
+        private string SerializeToXml(JToken data)
+        {
+            var rootName = SanitizeElementName(Config.XmlRootElement ?? "root");
+            var root = new XElement(rootName);
+
+            ConfigureNamespace(root);
+            ConvertJTokenToXElement(data, root);
+
+            return CreateXmlDocument(root);
+        }
+
+        private string CreateXmlDocument(XElement root)
+        {
+            var doc = new XDocument();
+
+            if (Config.XmlIncludeDeclaration)
+            {
+                doc.Declaration = new XDeclaration(
+                    "1.0",
+                    Config.Encoding.WebName,
+                    Config.XmlStandalone ? "yes" : null
+                );
+            }
+
+            doc.Add(root);
+
+            var settings = CreateXmlWriterSettings();
             using var stringWriter = new StringWriter();
             using (var xmlWriter = XmlWriter.Create(stringWriter, settings))
             {
                 doc.Save(xmlWriter);
                 xmlWriter.Flush();
             }
+
             return stringWriter.ToString();
         }
+
+        private string SerializeTokenToXml(JToken token, string elementName, XmlWriterSettings settings)
+        {
+            var element = new XElement(SanitizeElementName(elementName));
+            ConvertJTokenToXElement(token, element);
+
+            var writerSettings = settings ?? CreateXmlWriterSettings();
+            writerSettings.OmitXmlDeclaration = true;
+
+            using var stringWriter = new StringWriter();
+            using (var xmlWriter = XmlWriter.Create(stringWriter, writerSettings))
+            {
+                element.WriteTo(xmlWriter);
+                xmlWriter.Flush();
+            }
+
+            return stringWriter.ToString();
+        }
+
+        private void ConvertJTokenToXElement(JToken token, XElement parent)
+        {
+            switch (token.Type)
+            {
+                case JTokenType.Object:
+                    ConvertJObjectToXElement((JObject)token, parent);
+                    break;
+
+                case JTokenType.Array:
+                    ConvertJArrayToXElement((JArray)token, parent);
+                    break;
+
+                case JTokenType.Property:
+                    var prop = (JProperty)token;
+                    var childElement = new XElement(SanitizeElementName(prop.Name));
+                    ConvertJTokenToXElement(prop.Value, childElement);
+                    parent.Add(childElement);
+                    break;
+
+                default:
+                    if (token is JValue jValue)
+                    {
+                        AddValueToElement(parent, jValue.Value);
+                    }
+                    break;
+            }
+        }
+
+        private void ConvertJObjectToXElement(JObject jObject, XElement parent)
+        {
+            var properties = Config.SortKeys
+                ? jObject.Properties().OrderBy(p => p.Name)
+                : jObject.Properties();
+
+            foreach (var property in properties)
+            {
+                if (property.Name.StartsWith("@"))
+                {
+                    var attrName = SanitizeElementName(property.Name.Substring(1));
+                    var attrValue = FormatValue(property.Value);
+                    parent.SetAttributeValue(attrName, attrValue);
+                }
+                else if (property.Name == "#text")
+                {
+                    AddValueToElement(parent, property.Value);
+                }
+                else
+                {
+                    var element = new XElement(SanitizeElementName(property.Name));
+                    ConvertJTokenToXElement(property.Value, element);
+                    parent.Add(element);
+                }
+            }
+        }
+
+        private void ConvertJArrayToXElement(JArray jArray, XElement parent)
+        {
+            foreach (var item in jArray)
+            {
+                var itemElement = new XElement("item");
+                ConvertJTokenToXElement(item, itemElement);
+                parent.Add(itemElement);
+            }
+        }
+
+        private void AddValueToElement(XElement parent, object value)
+        {
+            if (value == null) return;
+
+            var textValue = FormatValue(value);
+
+            if (Config.XmlUseCData && ContainsXmlSpecialCharacters(textValue))
+            {
+                parent.Add(new XCData(EscapeCDataContent(textValue)));
+            }
+            else
+            {
+                parent.Value = textValue;
+            }
+        }
+
+        private JToken ProcessDataBeforeSerialization(JToken data)
+        {
+            var result = data;
+
+            if (Config.SortKeys)
+                result = SortKeysRecursively(result);
+
+            if (Config.ArrayWrap && result.Type != JTokenType.Array)
+                result = new JArray(result);
+
+            return result;
+        }
+
+        private bool NeedsPretty() => !Config.Minify && Config.PrettyPrint;
+
+        private int GetChunkSize() => Config.ChunkSize > 0 ? Config.ChunkSize : DEFAULT_CHUNK_SIZE;
 
         private XmlWriterSettings CreateXmlWriterSettings()
         {
@@ -285,22 +269,9 @@ namespace FormatConverter.Xml
             };
         }
 
-        private JToken ProcessDataBeforeSerialization(JToken data)
-        {
-            if (Config.SortKeys)
-                data = SortKeysRecursively(data);
-
-            if (Config.ArrayWrap && data.Type != JTokenType.Array)
-                return new JArray(data);
-
-            return data;
-        }
-
-        private bool NeedsPretty() => !Config.Minify && Config.PrettyPrint;
-
         private string CreateXmlHeader()
         {
-            if (!Config.XmlIncludeDeclaration) return "";
+            if (!Config.XmlIncludeDeclaration) return string.Empty;
 
             var standalone = Config.XmlStandalone ? " standalone=\"yes\"" : "";
             return $"<?xml version=\"1.0\" encoding=\"{Config.Encoding.WebName}\"{standalone}?>";
@@ -314,15 +285,15 @@ namespace FormatConverter.Xml
             {
                 if (!string.IsNullOrEmpty(Config.XmlNamespacePrefix))
                 {
-                    sb.Append($" xmlns:{Config.XmlNamespacePrefix}=\"{Config.XmlNamespace}\"");
+                    sb.Append($" xmlns:{Config.XmlNamespacePrefix}=\"{SecurityElement.Escape(Config.XmlNamespace)}\"");
                 }
                 else
                 {
-                    sb.Append($" xmlns=\"{Config.XmlNamespace}\"");
+                    sb.Append($" xmlns=\"{SecurityElement.Escape(Config.XmlNamespace)}\"");
                 }
             }
 
-            sb.Append(">");
+            sb.Append('>');
             return sb.ToString();
         }
 
@@ -331,268 +302,76 @@ namespace FormatConverter.Xml
             if (string.IsNullOrEmpty(Config.XmlNamespace)) return;
 
             var ns = XNamespace.Get(Config.XmlNamespace);
+
             if (!string.IsNullOrEmpty(Config.XmlNamespacePrefix))
             {
                 root.Add(new XAttribute(XNamespace.Xmlns + Config.XmlNamespacePrefix, Config.XmlNamespace));
-                root.Name = ns + root.Name.LocalName;
             }
             else
             {
                 root.Add(new XAttribute("xmlns", Config.XmlNamespace));
-                root.Name = ns + root.Name.LocalName;
             }
+
+            root.Name = ns + root.Name.LocalName;
         }
 
-        private string SerializeTokenToXmlContent(JToken token, string elementName)
+        private string CreateSafeErrorXmlElement(string elementName, string errorMessage)
         {
-            var element = new XElement(SanitizeElementName(elementName));
-            ConvertObjectToXElement(token, element);
-
-            var settings = CreateXmlWriterSettings();
-            settings.OmitXmlDeclaration = true;
+            var element = new XElement(
+                SanitizeElementName(elementName),
+                new XAttribute("error", errorMessage)
+            );
 
             using var stringWriter = new StringWriter();
-            using (var xmlWriter = XmlWriter.Create(stringWriter, settings))
+            using (var xmlWriter = XmlWriter.Create(stringWriter, new XmlWriterSettings { OmitXmlDeclaration = true }))
             {
-                element.Save(xmlWriter);
-                xmlWriter.Flush();
+                element.WriteTo(xmlWriter);
             }
+
             return stringWriter.ToString();
         }
 
-        private string SerializePropertyToXml(JProperty property)
-        {
-            if (property.Name.StartsWith("@"))
-                return "";
-
-            return SerializeTokenToXmlContent(property.Value, property.Name);
-        }
-
-        private string CreateErrorXml(string errorMessage, int count)
+        private string CreateErrorXml(string errorMessage)
         {
             var errorElement = new XElement("error",
                 new XElement("message", errorMessage),
-                new XElement("count", count),
-                new XElement("timestamp", DateTime.UtcNow.ToString("O"))
+                new XElement("timestamp", FormatDateTime(DateTime.UtcNow))
             );
 
-            var settings = CreateXmlWriterSettings();
-            using var stringWriter = new StringWriter();
-            using (var xmlWriter = XmlWriter.Create(stringWriter, settings))
-            {
-                errorElement.Save(xmlWriter);
-                xmlWriter.Flush();
-            }
-            return stringWriter.ToString();
+            return CreateXmlDocument(errorElement);
         }
 
-        private string CreateErrorXmlElement(string elementName, string errorMessage)
+        private static bool ContainsXmlSpecialCharacters(string text)
+            => text.IndexOfAny(['<', '>', '&', '"', '\'']) >= 0;
+
+        private static string EscapeCDataContent(string text)
         {
-            return $"<{elementName}><!-- Error: {errorMessage} --></{elementName}>";
-        }
-
-        private void ConvertObjectToXElement(object obj, XElement parent)
-        {
-            if (obj == null) return;
-
-            if (obj is JValue jValue)
-            {
-                var textValue = FormatValue(jValue.Value);
-                if (Config.XmlUseCData && ContainsSpecialCharacters(textValue))
-                    parent.Add(new XCData(textValue));
-                else
-                    parent.Value = textValue;
-            }
-            else if (obj is JObject jObject)
-            {
-                var properties = Config.SortKeys ? jObject.Properties().OrderBy(p => p.Name) : jObject.Properties();
-
-                foreach (var property in properties)
-                {
-                    if (property.Name.StartsWith("@"))
-                    {
-                        var attrName = property.Name.Substring(1);
-                        parent.SetAttributeValue(attrName, FormatValue(property.Value));
-                    }
-                    else if (property.Name == "#text")
-                    {
-                        var textValue = FormatValue(property.Value);
-                        if (Config.XmlUseCData && ContainsSpecialCharacters(textValue))
-                        {
-                            parent.Add(new XCData(textValue));
-                        }
-                        else
-                        {
-                            parent.Value = textValue;
-                        }
-                    }
-                    else
-                    {
-                        var element = new XElement(SanitizeElementName(property.Name));
-                        ConvertObjectToXElement(property.Value, element);
-                        parent.Add(element);
-                    }
-                }
-            }
-            else if (obj is JArray jArray)
-            {
-                foreach (var item in jArray)
-                {
-                    var itemElement = new XElement("item");
-                    ConvertObjectToXElement(item, itemElement);
-                    parent.Add(itemElement);
-                }
-            }
-            else
-            {
-                switch (obj)
-                {
-                    case Dictionary<string, object> dict:
-                        ConvertDictionaryToXml(dict, parent);
-                        break;
-
-                    case List<object> list:
-                        ConvertListToXml(list, parent);
-                        break;
-
-                    case Array array:
-                        ConvertArrayToXml(array, parent);
-                        break;
-
-                    default:
-                        var textValue = FormatValue(obj);
-                        if (Config.XmlUseCData && ContainsSpecialCharacters(textValue))
-                            parent.Add(new XCData(textValue));
-                        else
-                            parent.Value = textValue;
-                        break;
-                }
-            }
-        }
-
-        private void ConvertDictionaryToXml(Dictionary<string, object> dict, XElement parent)
-        {
-            var entries = Config.SortKeys ? dict.OrderBy(kvp => kvp.Key) : dict.AsEnumerable();
-
-            foreach (var kvp in entries)
-            {
-                if (kvp.Key.StartsWith("@"))
-                {
-                    var attrName = kvp.Key.Substring(1);
-                    parent.SetAttributeValue(attrName, FormatValue(kvp.Value));
-                }
-                else if (kvp.Key == "#text")
-                {
-                    var textValue = FormatValue(kvp.Value);
-                    if (Config.XmlUseCData && ContainsSpecialCharacters(textValue))
-                    {
-                        parent.Add(new XCData(textValue));
-                    }
-                    else
-                    {
-                        parent.Value = textValue;
-                    }
-                }
-                else
-                {
-                    var element = new XElement(SanitizeElementName(kvp.Key));
-                    ConvertObjectToXElement(kvp.Value, element);
-                    parent.Add(element);
-                }
-            }
-        }
-
-        private void ConvertListToXml(List<object> list, XElement parent)
-        {
-            foreach (var item in list)
-            {
-                var itemElement = new XElement("item");
-                ConvertObjectToXElement(item, itemElement);
-                parent.Add(itemElement);
-            }
-        }
-
-        private void ConvertArrayToXml(Array array, XElement parent)
-        {
-            foreach (var item in array)
-            {
-                var itemElement = new XElement("item");
-                ConvertObjectToXElement(item, itemElement);
-                parent.Add(itemElement);
-            }
-        }
-
-        private JToken SortKeysRecursively(JToken token)
-        {
-            return token.Type switch
-            {
-                JTokenType.Object => SortJObject((JObject)token),
-                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
-                _ => token
-            };
-        }
-
-        private JObject SortJObject(JObject obj)
-        {
-            var sorted = new JObject();
-            foreach (var property in obj.Properties().OrderBy(p => p.Name))
-            {
-                sorted[property.Name] = SortKeysRecursively(property.Value);
-            }
-            return sorted;
-        }
-
-        private string FormatValue(object value)
-        {
-            if (value == null) return string.Empty;
-
-            return value switch
-            {
-                DateTime dt => FormatDateTime(dt),
-                double d when !string.IsNullOrEmpty(Config.NumberFormat) => FormatNumber(d),
-                float f when !string.IsNullOrEmpty(Config.NumberFormat) => FormatNumber(f),
-                decimal m when !string.IsNullOrEmpty(Config.NumberFormat) => FormatNumber((double)m),
-                _ => value.ToString() ?? string.Empty
-            };
-        }
-
-        private string FormatDateTime(DateTime dateTime)
-        {
-            if (!string.IsNullOrEmpty(Config.DateFormat))
-            {
-                return Config.DateFormat.ToLower() switch
-                {
-                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                    _ => dateTime.ToString(Config.DateFormat)
-                };
-            }
-            return dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fff");
-        }
-
-        private string FormatNumber(double number)
-        {
-            return Config.NumberFormat?.ToLower() switch
-            {
-                "hexadecimal" => $"0x{(long)number:X}",
-                "scientific" => number.ToString("E"),
-                _ => number.ToString()
-            };
-        }
-
-        private static bool ContainsSpecialCharacters(string text)
-        {
-            return text.Contains('<') || text.Contains('>') || text.Contains('&') ||
-                   text.Contains('\n') || text.Contains('\r');
+            return text.Replace("]]>", "]]]]><![CDATA[>");
         }
 
         private static string SanitizeElementName(string name)
         {
-            if (string.IsNullOrEmpty(name)) return "element";
+            if (string.IsNullOrWhiteSpace(name))
+                return "element";
 
-            if (char.IsDigit(name[0])) name = "_" + name;
-            name = name.Replace(" ", "_").Replace("-", "_");
+            try
+            {
+                var encoded = XmlConvert.EncodeLocalName(name);
 
-            return name;
+                if (encoded.Length > 0 && char.IsDigit(encoded[0]))
+                    encoded = "_" + encoded;
+
+                return encoded;
+            }
+            catch
+            {
+                var sanitized = Regex.Replace(name, @"[^\w\.-]", "_");
+
+                if (string.IsNullOrEmpty(sanitized) || char.IsDigit(sanitized[0]))
+                    sanitized = "_" + sanitized;
+
+                return string.IsNullOrEmpty(sanitized) ? "element" : sanitized;
+            }
         }
     }
 }
