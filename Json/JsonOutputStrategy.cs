@@ -8,9 +8,13 @@ namespace FormatConverter.Json
     public class JsonOutputStrategy : BaseOutputStrategy
     {
         private const int DEFAULT_CHUNK_SIZE = 100;
+        private readonly StringBuilder _chunkBuilder = new(4096);
 
         public override string Serialize(JToken data)
         {
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+
             var processed = ProcessDataBeforeSerialization(data);
             var settings = CreateJsonSerializerSettings();
 
@@ -19,48 +23,17 @@ namespace FormatConverter.Json
 
         public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
         {
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+
             var settings = CreateJsonSerializerSettings();
             var serializer = JsonSerializer.Create(settings);
 
-            if (data is JArray array)
-            {
-                foreach (var chunk in StreamArray(array, serializer))
-                    yield return chunk;
-            }
-            else if (data.All(t => t.Type == JTokenType.Object))
-            {
-                foreach (var chunk in StreamObjectSequence(data, serializer))
-                    yield return chunk;
-            }
-            else
-            {
-                yield return Serialize(new JArray(data.ToArray()));
-            }
+            foreach (var chunk in StreamTokens(data, serializer))
+                yield return chunk;
         }
 
-        private IEnumerable<string> StreamArray(JArray array, JsonSerializer serializer)
-        {
-            var chunkSize = GetChunkSize();
-            var needsPretty = NeedsPretty();
-            var items = array.Children().ToList();
-
-            yield return needsPretty ? "[\n" : "[";
-
-            for (int i = 0; i < items.Count; i += chunkSize)
-            {
-                var chunkItems = items.Skip(i).Take(chunkSize).ToList();
-                var chunkJson = SerializeChunk(chunkItems, serializer, i > 0);
-
-                if (!string.IsNullOrEmpty(chunkJson))
-                {
-                    yield return chunkJson;
-                }
-            }
-
-            yield return needsPretty ? "\n]" : "]";
-        }
-
-        private IEnumerable<string> StreamObjectSequence(IEnumerable<JToken> objects, JsonSerializer serializer)
+        private IEnumerable<string> StreamTokens(IEnumerable<JToken> tokens, JsonSerializer serializer)
         {
             var chunkSize = GetChunkSize();
             var needsPretty = NeedsPretty();
@@ -69,9 +42,9 @@ namespace FormatConverter.Json
 
             yield return needsPretty ? "[\n" : "[";
 
-            foreach (var obj in objects)
+            foreach (var token in tokens)
             {
-                buffer.Add(obj);
+                buffer.Add(token);
 
                 if (buffer.Count >= chunkSize)
                 {
@@ -93,39 +66,40 @@ namespace FormatConverter.Json
         {
             if (items.Count == 0) return string.Empty;
 
-            var sb = new StringBuilder();
+            _chunkBuilder.Clear();
+
             var needsPretty = NeedsPretty();
             var indent = needsPretty ? new string(' ', Config.IndentSize ?? 2) : "";
 
             if (includeComma)
             {
-                sb.Append(",");
-                if (needsPretty) sb.Append("\n");
+                _chunkBuilder.Append(",");
+                if (needsPretty) _chunkBuilder.Append('\n');
             }
 
             for (int i = 0; i < items.Count; i++)
             {
                 if (i > 0)
                 {
-                    sb.Append(",");
-                    if (needsPretty) sb.Append("\n");
+                    _chunkBuilder.Append(",");
+                    if (needsPretty) _chunkBuilder.Append('\n');
                 }
 
-                if (needsPretty) sb.Append(indent);
+                if (needsPretty) _chunkBuilder.Append(indent);
 
                 try
                 {
                     var itemJson = SerializeToken(items[i], serializer);
-                    sb.Append(itemJson);
+                    _chunkBuilder.Append(itemJson);
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
                     var errorJson = CreateErrorJson(ex.Message, items[i]);
-                    sb.Append(errorJson);
+                    _chunkBuilder.Append(errorJson);
                 }
             }
 
-            return sb.ToString();
+            return _chunkBuilder.ToString();
         }
 
         private string SerializeToken(JToken token, JsonSerializer serializer)
@@ -167,26 +141,6 @@ namespace FormatConverter.Json
 
         private int GetChunkSize() => Config.ChunkSize > 0 ? Config.ChunkSize : DEFAULT_CHUNK_SIZE;
 
-        private JToken SortKeysRecursively(JToken token)
-        {
-            return token.Type switch
-            {
-                JTokenType.Object => SortJObject((JObject)token),
-                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
-                _ => token
-            };
-        }
-
-        private JObject SortJObject(JObject obj)
-        {
-            var sorted = new JObject();
-            foreach (var property in obj.Properties().OrderBy(p => p.Name))
-            {
-                sorted[property.Name] = SortKeysRecursively(property.Value);
-            }
-            return sorted;
-        }
-
         private JsonSerializerSettings CreateJsonSerializerSettings()
         {
             var settings = new JsonSerializerSettings
@@ -226,7 +180,36 @@ namespace FormatConverter.Json
         }
 
         private static string ConvertToSingleQuotes(string jsonString)
-            => jsonString.Replace("\"", "'");
+        {
+            var sb = new StringBuilder(jsonString.Length);
+            bool inString = false;
+            char? prevChar = null;
+
+            for (int i = 0; i < jsonString.Length; i++)
+            {
+                char c = jsonString[i];
+
+                if (c == '"' && prevChar != '\\')
+                {
+                    sb.Append('\'');
+                    inString = !inString;
+                }
+                else if (c == '\\' && prevChar == '\\')
+                {
+                    sb.Append(c);
+                    prevChar = null;
+                    continue;
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+
+                prevChar = c;
+            }
+
+            return sb.ToString();
+        }
 
         private string CreateErrorJson(string errorMessage, JToken originalToken)
         {

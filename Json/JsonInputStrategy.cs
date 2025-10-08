@@ -1,7 +1,6 @@
 ﻿using FormatConverter.Interfaces;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using System.IO;
 using System.Text;
 
 namespace FormatConverter.Json
@@ -47,44 +46,63 @@ namespace FormatConverter.Json
 
         private IEnumerable<JToken> ParseStreamInternal(string path)
         {
-            using var fileStream = File.OpenRead(path);
-            using var streamReader = new StreamReader(fileStream, Encoding.UTF8);
-            using var jsonReader = new JsonTextReader(streamReader)
-            {
-                SupportMultipleContent = true,
-                DateParseHandling = DateParseHandling.None
-            };
+            FileStream? fileStream = null;
+            StreamReader? streamReader = null;
+            JsonTextReader? jsonReader = null;
 
-            var settings = CreateJsonLoadSettings();
-
-            while (jsonReader.Read())
+            try
             {
-                if (jsonReader.TokenType == JsonToken.StartObject || jsonReader.TokenType == JsonToken.StartArray)
+                fileStream = File.OpenRead(path);
+                streamReader = new StreamReader(fileStream, Encoding.UTF8);
+                jsonReader = new JsonTextReader(streamReader)
                 {
-                    JToken? token = null;
-                    try
-                    {
-                        token = JToken.ReadFrom(jsonReader, settings);
+                    SupportMultipleContent = true,
+                    DateParseHandling = DateParseHandling.None
+                };
 
-                        if (Config.SortKeys)
-                            token = SortKeysRecursively(token);
-                    }
-                    catch (JsonReaderException ex)
+                var settings = CreateJsonLoadSettings();
+
+                while (jsonReader.Read())
+                {
+                    if (jsonReader.TokenType == JsonToken.StartObject ||
+                        jsonReader.TokenType == JsonToken.StartArray)
                     {
-                        if (Config.IgnoreErrors)
-                        {
-                            Console.WriteLine($"Warning: JSON streaming error ignored: {ex.Message}");
-                            token = HandleParsingError(ex, path);
-                        }
-                        else
-                        {
-                            throw new FormatException($"Invalid JSON at line {jsonReader.LineNumber}," +
-                                $" position {jsonReader.LinePosition}: {ex.Message}", ex);
-                        }
+                        var token = ReadToken(jsonReader, settings, path);
+
+                        if (token != null)
+                            yield return token;
                     }
-                    if (token != null)
-                        yield return token;
                 }
+            }
+            finally
+            {
+                jsonReader?.Close();
+                streamReader?.Dispose();
+                fileStream?.Dispose();
+            }
+        }
+
+        private JToken? ReadToken(JsonTextReader jsonReader, JsonLoadSettings settings, string path)
+        {
+            try
+            {
+                var token = JToken.ReadFrom(jsonReader, settings);
+
+                if (Config.SortKeys)
+                    token = SortKeysRecursively(token);
+
+                return token;
+            }
+            catch (JsonReaderException ex)
+            {
+                if (Config.IgnoreErrors)
+                {
+                    Console.WriteLine($"Warning: JSON streaming error ignored: {ex.Message}");
+                    return HandleParsingError(ex, path);
+                }
+
+                throw new FormatException($"Invalid JSON at line {jsonReader.LineNumber}," +
+                    $" position {jsonReader.LinePosition}: {ex.Message}", ex);
             }
         }
 
@@ -115,24 +133,6 @@ namespace FormatConverter.Json
             }
 
             throw new FormatException($"Invalid JSON: {ex.Message}", ex);
-        }
-
-        private JToken SortKeysRecursively(JToken token)
-        {
-            return token.Type switch
-            {
-                JTokenType.Object => SortJObject((JObject)token),
-                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
-                _ => token
-            };
-        }
-
-        private JObject SortJObject(JObject obj)
-        {
-            var sorted = new JObject();
-            foreach (var property in obj.Properties().OrderBy(p => p.Name))
-                sorted[property.Name] = SortKeysRecursively(property.Value);
-            return sorted;
         }
     }
 }
