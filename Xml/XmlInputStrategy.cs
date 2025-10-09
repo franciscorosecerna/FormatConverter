@@ -34,7 +34,7 @@ namespace FormatConverter.Xml
             }
         }
 
-        public override IEnumerable<JToken> ParseStream(string path)
+        public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(path))
                 throw new ArgumentException("Path cannot be null or empty.", nameof(path));
@@ -42,10 +42,10 @@ namespace FormatConverter.Xml
             if (!File.Exists(path))
                 throw new FileNotFoundException("Input file not found.", path);
 
-            return ParseStreamInternal(path);
+            return ParseStreamInternal(path, cancellationToken);
         }
 
-        private IEnumerable<JToken> ParseStreamInternal(string path)
+        private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
         {
             FileStream? fileStream = null;
             StreamReader? streamReader = null;
@@ -59,15 +59,36 @@ namespace FormatConverter.Xml
                 streamReader = new StreamReader(fileStream, Config.Encoding ?? Encoding.UTF8, true);
                 xmlReader = XmlReader.Create(streamReader, settings);
 
+                var fileSize = fileStream.Length;
+                var showProgress = fileSize > 10_485_760;
+                var elementsProcessed = 0;
+
                 while (xmlReader.Read())
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     if (xmlReader.NodeType == XmlNodeType.Element && !xmlReader.IsEmptyElement)
                     {
                         var token = ReadXmlElement(xmlReader, path);
 
                         if (token != null)
+                        {
+                            elementsProcessed++;
+
+                            if (showProgress && elementsProcessed % 100 == 0)
+                            {
+                                var progress = (double)fileStream.Position / fileSize * 100;
+                                Console.Error.Write($"\rProcessing: {progress:F1}% ({elementsProcessed} elements)");
+                            }
+
                             yield return token;
+                        }
                     }
+                }
+
+                if (showProgress)
+                {
+                    Console.Error.WriteLine($"\rCompleted: {elementsProcessed} elements processed");
                 }
             }
             finally
@@ -95,18 +116,30 @@ namespace FormatConverter.Xml
             }
             catch (XmlException ex)
             {
+                var errorLocation = $"{path}";
+                if (ex.LineNumber > 0)
+                    errorLocation += $" at line {ex.LineNumber}, column {ex.LinePosition}";
+
                 if (Config.IgnoreErrors)
                 {
-                    Console.WriteLine($"Warning: XML element read error ignored: {ex.Message}");
+                    Console.Error.WriteLine($"Warning: XML error ignored in {errorLocation}: {ex.Message}");
                     return new JObject
                     {
                         ["error"] = ex.Message,
-                        ["file"] = path
+                        ["location"] = errorLocation
                     };
                 }
 
-                throw new FormatException($"Invalid XML element at line {ex.LineNumber}, " +
-                    $"position {ex.LinePosition}: {ex.Message}", ex);
+                throw new FormatException($"Invalid XML in {errorLocation}: {ex.Message}", ex);
+            }
+            catch (Exception ex) when (Config.IgnoreErrors)
+            {
+                Console.Error.WriteLine($"Warning: Unexpected error ignored in {path}: {ex.Message}");
+                return new JObject
+                {
+                    ["error"] = ex.Message,
+                    ["source"] = path
+                };
             }
         }
 
@@ -140,7 +173,7 @@ namespace FormatConverter.Xml
         {
             if (Config.IgnoreErrors)
             {
-                Console.WriteLine($"Warning: XML parsing error ignored: {ex.Message}");
+                Console.Error.WriteLine($"Warning: XML parsing error ignored: {ex.Message}");
                 return new JObject
                 {
                     ["error"] = ex.Message,

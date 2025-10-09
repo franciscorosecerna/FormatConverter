@@ -13,7 +13,7 @@ namespace FormatConverter.Interfaces
 
         public abstract JToken Parse(string input);
 
-        public abstract IEnumerable<JToken> ParseStream(string path);
+        public abstract IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken);
 
         protected JToken SortKeysRecursively(JToken token)
         {

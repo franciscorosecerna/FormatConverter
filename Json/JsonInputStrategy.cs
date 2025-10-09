@@ -33,7 +33,7 @@ namespace FormatConverter.Json
             }
         }
 
-        public override IEnumerable<JToken> ParseStream(string path)
+        public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(path))
                 throw new ArgumentException("Path cannot be null or empty.", nameof(path));
@@ -41,10 +41,10 @@ namespace FormatConverter.Json
             if (!File.Exists(path))
                 throw new FileNotFoundException("Input file not found.", path);
 
-            return ParseStreamInternal(path);
+            return ParseStreamInternal(path, cancellationToken);
         }
 
-        private IEnumerable<JToken> ParseStreamInternal(string path)
+        private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
         {
             FileStream? fileStream = null;
             StreamReader? streamReader = null;
@@ -64,6 +64,8 @@ namespace FormatConverter.Json
 
                 while (jsonReader.Read())
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     if (jsonReader.TokenType == JsonToken.StartObject ||
                         jsonReader.TokenType == JsonToken.StartArray)
                     {
@@ -97,7 +99,7 @@ namespace FormatConverter.Json
             {
                 if (Config.IgnoreErrors)
                 {
-                    Console.WriteLine($"Warning: JSON streaming error ignored: {ex.Message}");
+                    Console.Error.WriteLine($"Warning: JSON streaming error ignored: {ex.Message}");
                     return HandleParsingError(ex, path);
                 }
 
@@ -122,7 +124,7 @@ namespace FormatConverter.Json
         {
             if (Config.IgnoreErrors)
             {
-                Console.WriteLine($"Warning: JSON parsing error ignored: {ex.Message}");
+                Console.Error.WriteLine($"Warning: JSON parsing error ignored: {ex.Message}");
                 return new JObject
                 {
                     ["error"] = ex.Message,

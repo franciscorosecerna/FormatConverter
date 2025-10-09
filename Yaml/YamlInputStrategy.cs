@@ -2,6 +2,7 @@
 using Newtonsoft.Json.Linq;
 using System.Text;
 using YamlDotNet.Core;
+using YamlDotNet.Core.Events;
 using YamlDotNet.Serialization;
 
 namespace FormatConverter.Yaml
@@ -10,10 +11,11 @@ namespace FormatConverter.Yaml
     {
         public override JToken Parse(string input)
         {
-            if (Config.UseStreaming)
+            if (string.IsNullOrWhiteSpace(input))
             {
-                var firstToken = ParseStream(input).FirstOrDefault();
-                return firstToken ?? new JObject();
+                return Config.IgnoreErrors
+                    ? new JObject()
+                    : throw new ArgumentException("YAML input cannot be null or empty");
             }
 
             var deserializer = CreateDeserializer();
@@ -27,343 +29,132 @@ namespace FormatConverter.Yaml
 
                 return token;
             }
+            catch (YamlException ex)
+            {
+                return HandleParsingError(ex, input);
+            }
             catch (Exception ex) when (ex is not FormatException)
             {
                 return HandleParsingError(ex, input);
             }
         }
 
-        public override IEnumerable<JToken> ParseStream(string input)
+        public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken)
         {
-            if (!Config.UseStreaming)
-            {
-                yield return Parse(input);
-                yield break;
-            }
+            if (string.IsNullOrWhiteSpace(path))
+                throw new ArgumentException("Path cannot be null or empty.", nameof(path));
 
-            var bytes = Encoding.UTF8.GetBytes(input);
-            var totalSize = bytes.Length;
+            if (!File.Exists(path))
+                throw new FileNotFoundException("Input file not found.", path);
 
-            if (HasMultipleDocuments(input))
-            {
-                foreach (var token in StreamMultipleDocuments(bytes, totalSize))
-                    yield return token;
-            }
-            else if (HasLargeArrays(input))
-            {
-                foreach (var chunk in StreamLargeArrays(bytes, totalSize))
-                    yield return chunk;
-            }
-            else if (HasManyTopLevelProperties(input))
-            {
-                foreach (var chunk in StreamTopLevelProperties(bytes, totalSize))
-                    yield return chunk;
-            }
-            else
-            {
-                foreach (var token in StreamSingleDocument(bytes, totalSize))
-                    yield return token;
-            }
+            return ParseStreamInternal(path, cancellationToken);
         }
 
-        private IEnumerable<JToken> StreamMultipleDocuments(byte[] bytes, int totalSize)
+        private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken = default)
         {
-            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
-            var input = Encoding.UTF8.GetString(bytes);
-            var deserializer = CreateDeserializer();
-
-            IEnumerable<JToken> Iterator()
-            {
-                var documents = input.Split(["---"], StringSplitOptions.RemoveEmptyEntries);
-                var tokenBuffer = new List<JToken>();
-                var currentBufferSize = 0;
-                var processedBytes = 0L;
-
-                for (int i = 0; i < documents.Length; i++)
-                {
-                    var trimmedDoc = documents[i].Trim();
-                    if (string.IsNullOrEmpty(trimmedDoc)) continue;
-
-                    var yamlObject = deserializer.Deserialize(new StringReader(trimmedDoc));
-                    if (yamlObject != null)
-                    {
-                        var token = ConvertObjectToJToken(yamlObject);
-
-                        if (Config.SortKeys)
-                            token = SortKeysRecursively(token);
-
-                        tokenBuffer.Add(token);
-                        var tokenBytes = GetTokenSizeInBytes(token);
-                        currentBufferSize += tokenBytes;
-                        processedBytes += tokenBytes;
-
-                        if (currentBufferSize >= bufferSize)
-                        {
-                            foreach (var bufferedToken in tokenBuffer)
-                                yield return bufferedToken;
-
-                            tokenBuffer.Clear();
-                            currentBufferSize = 0;
-
-                            if (totalSize > bufferSize * 10)
-                            {
-                                var progress = (double)processedBytes / totalSize * 100;
-                                if (progress % 10 < 1)
-                                    Console.WriteLine($"YAML multi-document streaming progress: {progress:F1}%");
-                            }
-                        }
-                    }
-                }
-                foreach (var bufferedToken in tokenBuffer)
-                    yield return bufferedToken;
-            }
+            FileStream? fileStream = null;
+            StreamReader? streamReader = null;
 
             try
             {
-                return Iterator();
+                fileStream = File.OpenRead(path);
+                streamReader = new StreamReader(fileStream, Config.Encoding, true);
+
+                var fileSize = fileStream.Length;
+                var showProgress = fileSize > 10_485_760; // Show progress for files > 10MB
+                var documentsProcessed = 0;
+
+                var parser = new Parser(streamReader);
+                var deserializer = CreateDeserializer();
+
+                parser.Consume<StreamStart>();
+
+                while (parser.Accept<DocumentStart>(out _))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var token = ReadDocument(parser, deserializer, path);
+
+                    if (token != null)
+                    {
+                        documentsProcessed++;
+
+                        if (showProgress && documentsProcessed % 100 == 0)
+                        {
+                            var progress = (double)fileStream.Position / fileSize * 100;
+                            Console.Error.Write($"\rProcessing: {progress:F1}% ({documentsProcessed} documents)");
+                        }
+
+                        yield return token;
+                    }
+                }
+
+                parser.Consume<StreamEnd>();
+
+                if (showProgress)
+                {
+                    Console.Error.WriteLine($"\rCompleted: {documentsProcessed} documents processed");
+                }
             }
-            catch (YamlException ex)
+            finally
             {
-                return HandleStreamingError(ex, Encoding.UTF8.GetString(bytes));
-            }
-            catch (Exception ex) when (ex is not FormatException)
-            {
-                return HandleStreamingError(ex, Encoding.UTF8.GetString(bytes));
+                streamReader?.Dispose();
+                fileStream?.Dispose();
             }
         }
 
-        private IEnumerable<JToken> StreamLargeArrays(byte[] bytes, int totalSize)
+        private JToken? ReadDocument(Parser parser, IDeserializer deserializer, string source)
         {
-            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
-            var input = Encoding.UTF8.GetString(bytes);
-            var deserializer = CreateDeserializer();
-
-            IEnumerable<JToken> Iterator()
-            {
-                var yamlObject = deserializer.Deserialize(new StringReader(input));
-                var maxItemsPerChunk = Math.Max(10, bufferSize / 1024);
-
-                var currentChunk = new JObject();
-                int itemCount = 0;
-                var currentChunkSize = 0;
-                var processedBytes = 0L;
-
-                if (yamlObject is Dictionary<object, object> dict)
-                {
-                    foreach (var kvp in dict)
-                    {
-                        var key = kvp.Key?.ToString() ?? "null";
-
-                        if (kvp.Value is List<object> list && list.Count > maxItemsPerChunk)
-                        {
-                            for (int i = 0; i < list.Count; i += maxItemsPerChunk)
-                            {
-                                var chunk = list.Skip(i).Take(maxItemsPerChunk).ToList();
-                                var chunkObject = new JObject();
-                                chunkObject[key] = ConvertListToJArray(chunk);
-
-                                if (!Config.NoMetadata)
-                                {
-                                    chunkObject["_chunk_info"] = new JObject
-                                    {
-                                        ["array_key"] = key,
-                                        ["chunk_start"] = i,
-                                        ["chunk_size"] = chunk.Count,
-                                        ["total_items"] = list.Count
-                                    };
-                                }
-
-                                var chunkBytes = GetTokenSizeInBytes(chunkObject);
-                                processedBytes += chunkBytes;
-
-                                yield return Config.SortKeys ? SortKeysRecursively(chunkObject) : chunkObject;
-
-                                if (totalSize > bufferSize * 10 && i % (maxItemsPerChunk * 5) == 0)
-                                {
-                                    var progress = (double)processedBytes / totalSize * 100;
-                                    Console.WriteLine($"YAML large array streaming progress: {progress:F1}%");
-                                }
-                            }
-                        }
-                        else
-                        {
-                            currentChunk[key] = ConvertObjectToJToken(kvp.Value);
-                            itemCount++;
-
-                            var itemBytes = GetTokenSizeInBytes(currentChunk[key]);
-                            currentChunkSize += itemBytes;
-                            processedBytes += itemBytes;
-
-                            if (itemCount >= maxItemsPerChunk || currentChunkSize >= bufferSize)
-                            {
-                                yield return Config.SortKeys ? SortKeysRecursively(currentChunk) : currentChunk;
-
-                                currentChunk = new JObject();
-                                itemCount = 0;
-                                currentChunkSize = 0;
-                            }
-                        }
-                    }
-                }
-                else if (yamlObject is List<object> rootList)
-                {
-                    for (int i = 0; i < rootList.Count; i += maxItemsPerChunk)
-                    {
-                        var chunk = rootList.Skip(i).Take(maxItemsPerChunk).ToList();
-                        var chunkArray = ConvertListToJArray(chunk);
-
-                        var chunkBytes = GetTokenSizeInBytes(chunkArray);
-                        processedBytes += chunkBytes;
-
-                        yield return chunkArray;
-
-                        if (totalSize > bufferSize * 10 && i % (maxItemsPerChunk * 5) == 0)
-                        {
-                            var progress = (double)processedBytes / totalSize * 100;
-                            Console.WriteLine($"YAML root array streaming progress: {progress:F1}%");
-                        }
-                    }
-                }
-
-                if (itemCount > 0 || currentChunk.Count > 0)
-                {
-                    yield return Config.SortKeys ? SortKeysRecursively(currentChunk) : currentChunk;
-                }
-            }
-
             try
             {
-                return Iterator();
-            }
-            catch (YamlException ex)
-            {
-                return HandleStreamingError(ex, Encoding.UTF8.GetString(bytes));
-            }
-            catch (Exception ex) when (ex is not FormatException)
-            {
-                return HandleStreamingError(ex, Encoding.UTF8.GetString(bytes));
-            }
-        }
+                parser.Consume<DocumentStart>();
 
-        private IEnumerable<JToken> StreamTopLevelProperties(byte[] bytes, int totalSize)
-        {
-            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
-            var input = Encoding.UTF8.GetString(bytes);
-            var deserializer = CreateDeserializer();
-
-            IEnumerable<JToken> Iterator()
-            {
-                var yamlObject = deserializer.Deserialize(new StringReader(input));
-
-                if (yamlObject is Dictionary<object, object> dict)
+                if (parser.Accept<DocumentEnd>(out _))
                 {
-                    var maxPropertiesPerChunk = Math.Max(5, bufferSize / 1024);
-                    var currentChunk = new JObject();
-                    int propertyCount = 0;
-                    var currentChunkSize = 0;
-                    var processedBytes = 0L;
-
-                    foreach (var kvp in dict)
-                    {
-                        var key = kvp.Key?.ToString() ?? "null";
-                        var value = ConvertObjectToJToken(kvp.Value);
-
-                        if (Config.SortKeys)
-                            value = SortKeysRecursively(value);
-
-                        currentChunk[key] = value;
-                        propertyCount++;
-
-                        var propertyBytes = Encoding.UTF8.GetBytes(key).Length;
-                        var valueBytes = GetTokenSizeInBytes(value);
-                        var totalPropertyBytes = propertyBytes + valueBytes;
-
-                        currentChunkSize += totalPropertyBytes;
-                        processedBytes += totalPropertyBytes;
-
-                        if (propertyCount >= maxPropertiesPerChunk || currentChunkSize >= bufferSize)
-                        {
-                            yield return Config.SortKeys ? SortJObject(currentChunk) : currentChunk;
-
-                            currentChunk = new JObject();
-                            propertyCount = 0;
-                            currentChunkSize = 0;
-
-                            if (totalSize > bufferSize * 10)
-                            {
-                                var progress = (double)processedBytes / totalSize * 100;
-                                if (progress % 10 < 1)
-                                    Console.WriteLine($"YAML top-level properties streaming progress: {progress:F1}%");
-                            }
-                        }
-                    }
-
-                    if (propertyCount > 0 || currentChunk.Count > 0)
-                    {
-                        yield return Config.SortKeys ? SortJObject(currentChunk) : currentChunk;
-                    }
+                    parser.Consume<DocumentEnd>();
+                    return null;
                 }
-            }
 
-            try
-            {
-                return Iterator();
-            }
-            catch (YamlException ex)
-            {
-                return HandleStreamingError(ex, Encoding.UTF8.GetString(bytes));
-            }
-            catch (Exception ex) when (ex is not FormatException)
-            {
-                return HandleStreamingError(ex, Encoding.UTF8.GetString(bytes));
-            }
-        }
+                var yamlObject = deserializer.Deserialize(parser);
 
-        private IEnumerable<JToken> StreamSingleDocument(byte[] bytes, int totalSize)
-        {
-            var input = Encoding.UTF8.GetString(bytes);
-            var deserializer = CreateDeserializer();
+                parser.Consume<DocumentEnd>();
 
-            IEnumerable<JToken> Iterator()
-            {
-                var token = ParseYamlDocument(input, deserializer);
+                if (yamlObject == null)
+                    return null;
+
+                var token = ConvertObjectToJToken(yamlObject);
 
                 if (Config.SortKeys)
                     token = SortKeysRecursively(token);
 
-                yield return token;
-
-                if (totalSize > 1024)
-                {
-                    Console.WriteLine("YAML single document streaming progress: 100.0%");
-                }
-            }
-
-            try
-            {
-                return Iterator();
+                return token;
             }
             catch (YamlException ex)
             {
-                return HandleStreamingError(ex, Encoding.UTF8.GetString(bytes));
-            }
-            catch (Exception ex) when (ex is not FormatException)
-            {
-                return HandleStreamingError(ex, Encoding.UTF8.GetString(bytes));
-            }
-        }
+                var errorLocation = $"{source}";
+                if (ex.Start.Line > 0)
+                    errorLocation += $" at line {ex.Start.Line}, column {ex.Start.Column}";
 
-        private IEnumerable<JToken> HandleStreamingError(Exception ex, string input)
-        {
-            if (Config.IgnoreErrors)
-            {
-                Console.WriteLine($"Warning: YAML streaming error ignored: {ex.Message}");
-                return [HandleParsingError(ex, input)];
+                if (Config.IgnoreErrors)
+                {
+                    Console.Error.WriteLine($"Warning: YAML error ignored in {errorLocation}: {ex.Message}");
+                    return new JObject
+                    {
+                        ["error"] = ex.Message,
+                        ["location"] = errorLocation
+                    };
+                }
+
+                throw new FormatException($"Invalid YAML in {errorLocation}: {ex.Message}", ex);
             }
-            else
+            catch (Exception ex) when (Config.IgnoreErrors)
             {
-                var exceptionType = ex is YamlException ? "YAML" : "streaming";
-                throw new FormatException($"Invalid YAML during {exceptionType}: {ex.Message}", ex);
+                Console.Error.WriteLine($"Warning: Unexpected error ignored in {source}: {ex.Message}");
+                return new JObject
+                {
+                    ["error"] = ex.Message,
+                    ["source"] = source
+                };
             }
         }
 
@@ -392,88 +183,20 @@ namespace FormatConverter.Yaml
             return ConvertObjectToJToken(yamlObject);
         }
 
-        private static bool HasMultipleDocuments(string input)
-        {
-            var lines = input.Split('\n');
-            return lines.Count(line => line.Trim() == "---") > 1;
-        }
-
-        private static bool HasLargeArrays(string input)
-        {
-            var lines = input.Split('\n');
-            var arrayItemLines = lines.Count(line => line.TrimStart().StartsWith("- "));
-            return arrayItemLines > 20;
-        }
-
-        private bool HasManyTopLevelProperties(string input)
-        {
-            try
-            {
-                var deserializer = CreateDeserializer();
-                var yamlObject = deserializer.Deserialize(new StringReader(input));
-
-                if (yamlObject is Dictionary<object, object> dict)
-                {
-                    return dict.Count > 15;
-                }
-                return false;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static int GetTokenSizeInBytes(JToken token)
-        {
-            return token.Type switch
-            {
-                JTokenType.String => Encoding.UTF8.GetByteCount(token.ToString()),
-                JTokenType.Integer => Encoding.UTF8.GetByteCount(token.ToString()),
-                JTokenType.Float => Encoding.UTF8.GetByteCount(token.ToString()),
-                JTokenType.Boolean => token.ToString().Length,
-                JTokenType.Null => 4,
-                JTokenType.Date => Encoding.UTF8.GetByteCount(token.ToString()),
-                JTokenType.Object => GetObjectSizeInBytes((JObject)token),
-                JTokenType.Array => GetArraySizeInBytes((JArray)token),
-                _ => Encoding.UTF8.GetByteCount(token.ToString())
-            };
-        }
-
-        private static int GetObjectSizeInBytes(JObject obj)
-        {
-            var totalSize = 2;
-            foreach (var property in obj.Properties())
-            {
-                totalSize += Encoding.UTF8.GetByteCount($"\"{property.Name}\":");
-                totalSize += GetTokenSizeInBytes(property.Value);
-                totalSize += 1;
-            }
-            return totalSize;
-        }
-
-        private static int GetArraySizeInBytes(JArray array)
-        {
-            var totalSize = 2;
-            foreach (var item in array)
-            {
-                totalSize += GetTokenSizeInBytes(item);
-                totalSize += 1;
-            }
-            return totalSize;
-        }
-
         private JObject HandleParsingError(Exception ex, string input)
         {
             if (Config.IgnoreErrors)
             {
-                Console.WriteLine($"Warning: YAML parsing error ignored: {ex.Message}");
+                Console.Error.WriteLine($"Warning: YAML parsing error ignored: {ex.Message}");
                 return new JObject
                 {
                     ["error"] = ex.Message,
-                    ["raw"] = input.Length > 1000 ? string.Concat(input.AsSpan(0, 1000), "...") : input
+                    ["raw"] = input.Length > 1000
+                        ? string.Concat(input.AsSpan(0, 1000), "...")
+                        : input
                 };
             }
+
             throw new FormatException($"Invalid YAML: {ex.Message}", ex);
         }
 
@@ -489,13 +212,20 @@ namespace FormatConverter.Yaml
                 string str => new JValue(str),
                 bool b => new JValue(b),
                 byte b => new JValue(b),
+                sbyte sb => new JValue(sb),
                 short s => new JValue(s),
+                ushort us => new JValue(us),
                 int i => new JValue(i),
+                uint ui => new JValue(ui),
                 long l => new JValue(l),
+                ulong ul => new JValue(ul),
                 float f => new JValue(f),
                 double d => new JValue(d),
                 decimal m => new JValue(m),
                 DateTime dt => new JValue(dt),
+                Guid guid => new JValue(guid),
+                TimeSpan ts => new JValue(ts),
+                Uri uri => new JValue(uri),
                 _ => new JValue(obj.ToString())
             };
         }
@@ -503,10 +233,21 @@ namespace FormatConverter.Yaml
         private JObject ConvertDictionaryToJObject(Dictionary<object, object> dict)
         {
             var result = new JObject();
+            var nullKeyCounter = 0;
 
             foreach (var kvp in dict)
             {
-                var key = kvp.Key?.ToString() ?? "null";
+                var key = kvp.Key?.ToString();
+
+                if (key == null)
+                {
+                    if (Config.StrictMode)
+                        throw new FormatException("Null keys are not allowed in strict mode");
+
+                    key = nullKeyCounter == 0 ? "null" : $"null_{nullKeyCounter}";
+                    nullKeyCounter++;
+                }
+
                 result[key] = ConvertObjectToJToken(kvp.Value);
             }
 
@@ -535,26 +276,6 @@ namespace FormatConverter.Yaml
             }
 
             return result;
-        }
-
-        private JToken SortKeysRecursively(JToken token)
-        {
-            return token.Type switch
-            {
-                JTokenType.Object => SortJObject((JObject)token),
-                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
-                _ => token
-            };
-        }
-
-        private JObject SortJObject(JObject obj)
-        {
-            var sorted = new JObject();
-            foreach (var property in obj.Properties().OrderBy(p => p.Name))
-            {
-                sorted[property.Name] = SortKeysRecursively(property.Value);
-            }
-            return sorted;
         }
     }
 }
