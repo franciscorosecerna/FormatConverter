@@ -54,9 +54,9 @@ If you omit `-o <output-file>`, the tool auto-generates one with the correct ext
 #### JSON Specific
 
 - `--json-escape-unicode`
-- `--json-trailing-commas`
-- `--json-quote-names` (default: true)
-- `--json-single-quotes`
+- `--json-allow-trailing-commas`
+- `--json-strict-property-names` (default: true)
+- `--json-allow-single-quotes`
 #### XML Specific
 
 - `--xml-root <name>`
@@ -78,8 +78,7 @@ If you omit `-o <output-file>`, the tool auto-generates one with the correct ext
 - `toml-strict-types` (Default: false)
 #### Other
 
-- `--compress <gzip|deflate|brotli>` → compress output (Base64 encoded)
-- `--compression-level <1-9>` (default: 6)
+- `--compress <gzip|deflate|brotli|lz4>` → compress output (Base64 encoded)
 - `--validate <schema>` → validate against schema file
 - `--strict` → fail on warnings
 - `--ignore-errors` → keep going even on non-critical errors

@@ -51,14 +51,14 @@ namespace FormatConverter
         [Option("json-escape-unicode", HelpText = "Escape non-ASCII characters in JSON output")]
         public bool JsonEscapeUnicode { get; set; }
 
-        [Option("json-trailing-commas", HelpText = "Allow trailing commas in JSON (non-standard but useful for editing)")]
-        public bool JsonTrailingCommas { get; set; }
+        [Option("json-allow-trailing-commas", HelpText = "Allow trailing commas in JSON input (non-standard but commonly used)")]
+        public bool JsonAllowTrailingCommas { get; set; }
 
-        [Option("json-quote-names", HelpText = "Always quote property names in JSON (default: true)")]
-        public bool JsonQuoteNames { get; set; } = true;
+        [Option("json-strict-property-names", Default = true, HelpText = "Require quoted property names in JSON input (default: true, set to false to allow unquoted names)")]
+        public bool JsonStrictPropertyNames { get; set; } = true;
 
-        [Option("json-single-quotes", HelpText = "Use single quotes instead of double quotes in JSON")]
-        public bool JsonSingleQuotes { get; set; }
+        [Option("json-allow-single-quotes", HelpText = "Allow single quotes in JSON input (non-standard, only works with direct string parsing)")]
+        public bool JsonAllowSingleQuotes { get; set; }
 
         #endregion
 
@@ -165,9 +165,6 @@ namespace FormatConverter
         [Option("compress", MetaValue = "TYPE", HelpText = "Compress output using specified algorithm (gzip, deflate, brotli)")]
         public string? Compression { get; set; }
 
-        [Option("compression-level", Default = 6, MetaValue = "LEVEL", HelpText = "Compression level (1-9, where 9 is maximum compression)")]
-        public int CompressionLevel { get; set; } = 6;
-
         #endregion
 
         #region Validation Options
@@ -188,7 +185,7 @@ namespace FormatConverter
         [Option("streaming", HelpText = "Use streaming parser for large files (reduces memory usage)")]
         public bool UseStreaming { get; set; }
 
-        [Option("chunk-size", Default = 100 ,HelpText = "Number of items per chunk when streaming")]
+        [Option("chunk-size", Default = 100, HelpText = "Number of items per chunk when streaming")]
         public int ChunkSize { get; set; } = 100;
 
         #endregion
