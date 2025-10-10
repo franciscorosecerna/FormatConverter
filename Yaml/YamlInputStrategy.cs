@@ -61,7 +61,7 @@ namespace FormatConverter.Yaml
                 streamReader = new StreamReader(fileStream, Config.Encoding, true);
 
                 var fileSize = fileStream.Length;
-                var showProgress = fileSize > 10_485_760; // Show progress for files > 10MB
+                var showProgress = fileSize > 10_485_760;
                 var documentsProcessed = 0;
 
                 var parser = new Parser(streamReader);

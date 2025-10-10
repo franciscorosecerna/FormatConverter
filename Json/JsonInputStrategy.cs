@@ -60,6 +60,10 @@ namespace FormatConverter.Json
                     DateParseHandling = DateParseHandling.None
                 };
 
+                var fileSize = fileStream.Length;
+                var showProgress = fileSize > 10_485_760;
+                var tokensProcessed = 0;
+
                 var settings = CreateJsonLoadSettings();
 
                 while (jsonReader.Read())
@@ -72,8 +76,26 @@ namespace FormatConverter.Json
                         var token = ReadToken(jsonReader, settings, path);
 
                         if (token != null)
+                        {
+                            tokensProcessed++;
+
+                            if (showProgress)
+                            {
+                                if (showProgress && tokensProcessed % 100 == 0)
+                                {
+                                    var progress = (double)fileStream.Position / fileSize * 100;
+                                    Console.Error.Write($"\rProcessing: {progress:F1}% ({tokensProcessed} elements)");
+                                }
+                            }
+
                             yield return token;
+                        }
                     }
+                }
+
+                if (showProgress)
+                {
+                    Console.Error.WriteLine($"\rCompleted: {tokensProcessed} objects processed");
                 }
             }
             finally

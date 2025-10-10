@@ -1,25 +1,42 @@
 ﻿using FormatConverter.Interfaces;
 using Newtonsoft.Json.Linq;
-using System.Globalization;
-using System.Text.RegularExpressions;
+using Tomlyn;
+using Tomlyn.Model;
+using Tomlyn.Syntax;
 
 namespace FormatConverter.Toml
 {
     public class TomlInputStrategy : BaseInputStrategy
     {
-        private string _currentArrayTableKey = string.Empty;
-
         public override JToken Parse(string input)
         {
-            if (Config.UseStreaming)
+            if (string.IsNullOrWhiteSpace(input))
             {
-                var firstToken = ParseStream(input).FirstOrDefault();
-                return firstToken ?? new JObject();
+                return Config.IgnoreErrors
+                    ? new JObject()
+                    : throw new ArgumentException("TOML input cannot be null or empty");
             }
 
             try
             {
-                var token = ParseTomlDocument(input);
+                var result = Tomlyn.Toml.Parse(input);
+
+                if (result.HasErrors)
+                {
+                    if (!Config.IgnoreErrors)
+                        throw new FormatException(string.Join("\n", result.Diagnostics));
+
+                    Console.Error.WriteLine("Warning: TOML parse errors ignored:");
+                    foreach (var diag in result.Diagnostics)
+                        Console.Error.WriteLine($"  {diag}");
+                }
+
+                var model = result.ToModel();
+
+                var token = ConvertToJToken(model);
+
+                if (Config.NoMetadata)
+                    RemoveMetadataProperties(token);
 
                 if (Config.SortKeys)
                     token = SortKeysRecursively(token);
@@ -32,627 +49,198 @@ namespace FormatConverter.Toml
             }
         }
 
-        public override IEnumerable<JToken> ParseStream(string input)
+        public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken)
         {
-            if (!Config.UseStreaming)
-            {
-                yield return Parse(input);
-                yield break;
-            }
+            if (string.IsNullOrWhiteSpace(path))
+                throw new ArgumentException("Path cannot be null or empty.", nameof(path));
 
-            IEnumerable<JToken> tokens;
+            if (!File.Exists(path))
+                throw new FileNotFoundException("Input file not found.", path);
+
+            return ParseStreamInternal(path, cancellationToken);
+        }
+
+        private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
+        {
+            FileStream? fileStream = null;
+            StreamReader? reader = null;
 
             try
             {
-                if (HasMultipleTables(input))
+                fileStream = File.OpenRead(path);
+                var fileSize = fileStream.Length;
+
+                if (fileSize > 100_000_000)
                 {
-                    tokens = StreamMultipleTables(input);
+                    throw new FormatException(
+                        $"TOML file too large ({fileSize / 1_048_576}MB). " +
+                        "Maximum supported size is 100MB for memory safety.");
                 }
-                else if (HasLargeArrayTables(input))
+
+                var showProgress = fileSize > 10_485_760;
+                reader = new StreamReader(fileStream, Config.Encoding, true);
+                var content = reader.ReadToEnd();
+
+                if (fileSize < 1_048_576)
                 {
-                    tokens = StreamLargeArrayTables(input);
+                    yield return Parse(content);
+                    yield break;
                 }
-                else if (HasManyTopLevelProperties(input))
+
+                var tokens = StreamLargeTomlFile(content, cancellationToken);
+                var count = 0;
+
+                foreach (var token in tokens)
                 {
-                    tokens = StreamTopLevelProperties(input);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    count++;
+
+                    if (showProgress && count % 10 == 0)
+                    {
+                        Console.Error.Write($"\rProcessing: {count} tables");
+                    }
+
+                    yield return token;
                 }
-                else
-                {
-                    tokens = [ParseTomlDocument(input)];
-                }
+
+                if (showProgress)
+                    Console.Error.WriteLine($"\rCompleted: {count} tables processed");
             }
-            catch (Exception ex) when (ex is not FormatException)
+            finally
             {
-                tokens = HandleStreamingError(ex, input);
+                reader?.Dispose();
+                fileStream?.Dispose();
+            }
+        }
+
+        private IEnumerable<JToken> StreamLargeTomlFile(string tomlContent, CancellationToken cancellationToken)
+        {
+            var result = Tomlyn.Toml.Parse(tomlContent);
+
+            if (result.HasErrors && !Config.IgnoreErrors)
+            {
+                throw new FormatException(string.Join("\n", result.Diagnostics));
             }
 
-            foreach (var token in tokens)
+            if (result.HasErrors && Config.IgnoreErrors)
             {
+                Console.Error.WriteLine("Warning: TOML parse errors ignored:");
+                foreach (var diag in result.Diagnostics)
+                    Console.Error.WriteLine($"  {diag}");
+            }
+
+            var model = result.ToModel();
+
+            if (model is TomlTable rootTable && rootTable.Count > 3)
+            {
+                foreach (var (key, value) in rootTable)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var token = ConvertToJToken(value);
+                    token = ApplyConfiguration(token);
+
+                    yield return new JObject { [key] = token };
+                }
+            }
+            else
+            {
+                var token = ConvertToJToken(model);
+                token = ApplyConfiguration(token);
+
                 yield return token;
             }
         }
 
-        private JToken ParseTomlDocument(string input)
+        private JToken ApplyConfiguration(JToken token)
         {
-            var lines = input.Split('\n')
-                .Select(line => line.TrimEnd('\r'))
-                .ToArray();
-
-            var result = new JObject();
-            var currentObject = result;
-            string currentSection = string.Empty;
-            _currentArrayTableKey = string.Empty;
-
-            for (int i = 0; i < lines.Length; i++)
-            {
-                var line = lines[i].Trim();
-
-                if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#'))
-                    continue;
-
-                if (line.StartsWith("[[") && line.EndsWith("]]"))
-                {
-                    var sectionName = line.Substring(2, line.Length - 4).Trim();
-                    currentSection = sectionName;
-                    _currentArrayTableKey = sectionName;
-
-                    if (!result.ContainsKey(sectionName))
-                    {
-                        result[sectionName] = new JArray();
-                    }
-
-                    var newTableObject = new JObject();
-                    ((JArray)result[sectionName]).Add(newTableObject);
-                    currentObject = newTableObject;
-                    continue;
-                }
-
-                if (line.StartsWith("[") && line.EndsWith("]"))
-                {
-                    var sectionName = line.Substring(1, line.Length - 2).Trim();
-                    currentSection = sectionName;
-                    _currentArrayTableKey = string.Empty;
-
-                    var sections = sectionName.Split('.');
-                    currentObject = result;
-
-                    foreach (var section in sections)
-                    {
-                        if (!currentObject.ContainsKey(section))
-                        {
-                            currentObject[section] = new JObject();
-                        }
-                        currentObject = (JObject)currentObject[section];
-                    }
-                    continue;
-                }
-
-                var keyValueMatch = Regex.Match(line, @"^([^=]+)=(.*)$");
-                if (keyValueMatch.Success)
-                {
-                    var key = keyValueMatch.Groups[1].Value.Trim();
-                    var valueStr = keyValueMatch.Groups[2].Value.Trim();
-
-                    if (valueStr.StartsWith("\"\"\""))
-                    {
-                        var multilineValue = ParseMultilineString(lines, ref i, valueStr);
-                        SetValue(currentObject, key, multilineValue);
-                    }
-                    else
-                    {
-                        var value = ParseValue(valueStr);
-                        SetValue(currentObject, key, value);
-                    }
-                }
-            }
-
             if (Config.NoMetadata)
-            {
-                RemoveMetadataProperties(result);
-            }
+                RemoveMetadataProperties(token);
 
-            return result;
+            if (Config.SortKeys)
+                token = SortKeysRecursively(token);
+
+            return token;
         }
 
-        private static bool HasMultipleTables(string input)
+        private JToken ConvertToJToken(object? value)
         {
-            var lines = input.Split('\n');
-            return lines.Count(line => line.Trim().StartsWith("[") && !line.Trim().StartsWith("[[")) > 3;
+            return value switch
+            {
+                null => JValue.CreateNull(),
+                TomlTable table => ConvertTableToJObject(table),
+                TomlArray array => ConvertArrayToJArray(array),
+                string s => new JValue(s),
+                bool b => new JValue(b),
+                long l => new JValue(l),
+                int i => new JValue(i),
+                double d => new JValue(d),
+                float f => new JValue(f),
+                decimal dec => new JValue(dec),
+                DateTime dt => new JValue(dt),
+                DateTimeOffset dto => new JValue(dto),
+                TomlDateTime tdt => new JValue(tdt.DateTime),
+                _ => JToken.FromObject(value)
+            };
         }
 
-        private static bool HasLargeArrayTables(string input)
+        private JObject ConvertTableToJObject(TomlTable table)
         {
-            var lines = input.Split('\n');
-            var arrayTableLines = lines.Count(line => line.Trim().StartsWith("[["));
-            return arrayTableLines > 10;
+            var obj = new JObject();
+
+            foreach (var kvp in table)
+                obj[kvp.Key] = ConvertToJToken(kvp.Value);
+
+            return obj;
         }
 
-        private static bool HasManyTopLevelProperties(string input)
+        private JArray ConvertArrayToJArray(TomlArray array)
         {
-            try
-            {
-                var lines = input.Split('\n');
-                var topLevelProperties = 0;
+            var arr = new JArray();
 
-                foreach (var line in lines)
-                {
-                    var trimmedLine = line.Trim();
-                    if (string.IsNullOrWhiteSpace(trimmedLine) || trimmedLine.StartsWith('#'))
-                        continue;
+            foreach (var item in array)
+                arr.Add(ConvertToJToken(item));
 
-                    if (trimmedLine.StartsWith("["))
-                        break;
-
-                    if (trimmedLine.Contains('='))
-                        topLevelProperties++;
-                }
-
-                return topLevelProperties > 10;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private IEnumerable<JToken> StreamMultipleTables(string input)
-        {
-            var tokens = new List<JToken>();
-            var lines = input.Split('\n');
-            var currentSection = new List<string>();
-            var topLevelProps = new List<string>();
-
-            foreach (var line in lines)
-            {
-                var trimmedLine = line.Trim();
-
-                if (string.IsNullOrWhiteSpace(trimmedLine) || trimmedLine.StartsWith('#'))
-                {
-                    currentSection.Add(line);
-                    continue;
-                }
-
-                if (trimmedLine.StartsWith("["))
-                {
-                    if (currentSection.Count > 1)
-                    {
-                        var sectionToml = string.Join('\n', topLevelProps.Concat(currentSection));
-                        var token = ParseTomlDocument(sectionToml);
-                        tokens.Add(Config.SortKeys ? SortKeysRecursively(token) : token);
-                    }
-
-                    currentSection.Clear();
-                    currentSection.Add(line);
-                }
-                else
-                {
-                    if (currentSection.Count == 0 && !line.Contains('['))
-                    {
-                        topLevelProps.Add(line);
-                    }
-                    else
-                    {
-                        currentSection.Add(line);
-                    }
-                }
-            }
-
-            if (currentSection.Count > 0)
-            {
-                var sectionToml = string.Join('\n', topLevelProps.Concat(currentSection));
-                var token = ParseTomlDocument(sectionToml);
-                tokens.Add(Config.SortKeys ? SortKeysRecursively(token) : token);
-            }
-
-            return tokens;
-        }
-
-        private IEnumerable<JToken> StreamLargeArrayTables(string input)
-        {
-            var chunks = new List<JToken>();
-            const int chunkSize = 5;
-
-            try
-            {
-                var lines = input.Split('\n');
-                var currentChunk = new List<string>();
-                var arrayTableCount = 0;
-                var topLevelProps = new List<string>();
-                var inArrayTable = false;
-
-                foreach (var line in lines)
-                {
-                    var trimmedLine = line.Trim();
-
-                    if (trimmedLine.StartsWith("[["))
-                    {
-                        inArrayTable = true;
-                        arrayTableCount++;
-
-                        if (arrayTableCount > chunkSize)
-                        {
-                            var chunkToml = string.Join('\n', topLevelProps.Concat(currentChunk));
-                            var chunkToken = ParseTomlDocument(chunkToml);
-
-                            var chunkObject = new JObject();
-                            foreach (var prop in ((JObject)chunkToken).Properties())
-                            {
-                                chunkObject[prop.Name] = prop.Value;
-                            }
-
-                            chunkObject["_chunk_info"] = new JObject
-                            {
-                                ["chunk_start"] = arrayTableCount - chunkSize,
-                                ["chunk_size"] = chunkSize,
-                                ["type"] = "array_tables"
-                            };
-
-                            chunks.Add(Config.SortKeys ? SortKeysRecursively(chunkObject) : chunkObject);
-
-                            currentChunk.Clear();
-                            arrayTableCount = 1;
-                        }
-                    }
-                    else if (!inArrayTable && !trimmedLine.StartsWith("["))
-                    {
-                        topLevelProps.Add(line);
-                        continue;
-                    }
-
-                    currentChunk.Add(line);
-                }
-
-                if (currentChunk.Count > 0)
-                {
-                    var chunkToml = string.Join('\n', topLevelProps.Concat(currentChunk));
-                    var token = ParseTomlDocument(chunkToml);
-                    chunks.Add(Config.SortKeys ? SortKeysRecursively(token) : token);
-                }
-            }
-            catch
-            {
-                chunks.Add(ParseTomlDocument(input));
-            }
-
-            return chunks;
-        }
-
-        private IEnumerable<JToken> StreamTopLevelProperties(string input)
-        {
-            var chunks = new List<JToken>();
-            const int chunkSize = 5;
-
-            try
-            {
-                var lines = input.Split('\n');
-                var currentChunk = new JObject();
-                var processedCount = 0;
-
-                foreach (var line in lines)
-                {
-                    var trimmedLine = line.Trim();
-
-                    if (string.IsNullOrWhiteSpace(trimmedLine) || trimmedLine.StartsWith('#'))
-                        continue;
-
-                    if (trimmedLine.StartsWith("["))
-                        break;
-
-                    if (trimmedLine.Contains('='))
-                    {
-                        var keyValueMatch = Regex.Match(trimmedLine, @"^([^=]+)=(.*)$");
-                        if (keyValueMatch.Success)
-                        {
-                            var key = keyValueMatch.Groups[1].Value.Trim();
-                            var valueStr = keyValueMatch.Groups[2].Value.Trim();
-                            var value = ParseValue(valueStr);
-
-                            currentChunk[key] = JToken.FromObject(value);
-                            processedCount++;
-
-                            if (processedCount >= chunkSize)
-                            {
-                                chunks.Add(Config.SortKeys ? SortKeysRecursively(currentChunk) : currentChunk);
-                                currentChunk = [];
-                                processedCount = 0;
-                            }
-                        }
-                    }
-                }
-
-                if (processedCount > 0)
-                {
-                    chunks.Add(Config.SortKeys ? SortKeysRecursively(currentChunk) : currentChunk);
-                }
-            }
-            catch
-            {
-                chunks.Add(ParseTomlDocument(input));
-            }
-
-            return chunks;
-        }
-
-        private IEnumerable<JToken> HandleStreamingError(Exception ex, string input)
-        {
-            if (Config.IgnoreErrors)
-            {
-                Console.WriteLine($"Warning: TOML streaming error ignored: {ex.Message}");
-                return [HandleParsingError(ex, input)];
-            }
-            else
-            {
-                throw new FormatException($"TOML streaming failed: {ex.Message}", ex);
-            }
+            return arr;
         }
 
         private JObject HandleParsingError(Exception ex, string input)
         {
             if (Config.IgnoreErrors)
             {
-                Console.WriteLine($"Warning: TOML parsing error ignored: {ex.Message}");
+                Console.Error.WriteLine($"Warning: TOML parsing error ignored: {ex.Message}");
+
                 return new JObject
                 {
                     ["error"] = ex.Message,
-                    ["raw"] = input.Length > 1000 ? string.Concat(input.AsSpan(0, 1000), "...") : input
+                    ["raw"] = input.Length > 1000
+                        ? string.Concat(input.AsSpan(0, 1000), "...")
+                        : input
                 };
             }
-            throw new FormatException($"Invalid TOML: {ex.Message}", ex);
+            throw new FormatException(ex.Message, ex);
         }
 
-        private static void RemoveMetadataProperties(JObject obj)
+        private static void RemoveMetadataProperties(JToken token)
         {
-            var keysToRemove = obj.Properties()
-                .Where(p => p.Name.StartsWith("_"))
-                .Select(p => p.Name)
-                .ToList();
-
-            foreach (var key in keysToRemove)
+            if (token is JObject obj)
             {
-                obj.Remove(key);
+                var toRemove = obj.Properties()
+                    .Where(p => p.Name.StartsWith("_"))
+                    .Select(p => p.Name)
+                    .ToList();
+
+                foreach (var key in toRemove)
+                    obj.Remove(key);
+
+                foreach (var prop in obj.Properties())
+                    RemoveMetadataProperties(prop.Value);
             }
-        }
-
-        private static string ParseMultilineString(string[] lines, ref int currentIndex, string firstLine)
-        {
-            var result = firstLine.Substring(3);
-
-            if (result.EndsWith("\"\"\""))
+            else if (token is JArray arr)
             {
-                return result.Substring(0, result.Length - 3);
+                foreach (var item in arr)
+                    RemoveMetadataProperties(item);
             }
-
-            for (int i = currentIndex + 1; i < lines.Length; i++)
-            {
-                var line = lines[i].TrimEnd('\r');
-                if (line.TrimEnd().EndsWith("\"\"\""))
-                {
-                    result += string.Concat("\n", line.AsSpan(0, line.LastIndexOf("\"\"\"")));
-                    currentIndex = i;
-                    break;
-                }
-                result += "\n" + line;
-            }
-
-            return result;
-        }
-
-        private object ParseValue(string value)
-        {
-            value = value.Trim();
-
-            if (value.StartsWith("\"") && value.EndsWith("\""))
-            {
-                return UnescapeString(value.Substring(1, value.Length - 2));
-            }
-
-            if (value.StartsWith("'") && value.EndsWith("'"))
-            {
-                return value.Substring(1, value.Length - 2);
-            }
-
-            if (value.StartsWith("[") && value.EndsWith("]"))
-            {
-                return ParseArray(value);
-            }
-
-            if (value.StartsWith("{") && value.EndsWith("}"))
-            {
-                return ParseInlineTable(value);
-            }
-
-            if (value == "true") return true;
-            if (value == "false") return false;
-
-            if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int intVal))
-                return intVal;
-
-            if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double doubleVal))
-                return doubleVal;
-
-            if (DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime dateVal))
-                return dateVal;
-
-            return value;
-        }
-
-        private JArray ParseArray(string arrayStr)
-        {
-            var content = arrayStr.Substring(1, arrayStr.Length - 2).Trim();
-            if (string.IsNullOrEmpty(content))
-                return [];
-
-            var items = new List<string>();
-            var current = string.Empty;
-            int depth = 0;
-            var inString = false;
-            char stringChar = '"';
-
-            foreach (char c in content)
-            {
-                if (!inString && (c == '"' || c == '\''))
-                {
-                    inString = true;
-                    stringChar = c;
-                    current += c;
-                }
-                else if (inString && c == stringChar)
-                {
-                    inString = false;
-                    current += c;
-                }
-                else if (!inString && (c == '[' || c == '{'))
-                {
-                    depth++;
-                    current += c;
-                }
-                else if (!inString && (c == ']' || c == '}'))
-                {
-                    depth--;
-                    current += c;
-                }
-                else if (!inString && c == ',' && depth == 0)
-                {
-                    items.Add(current.Trim());
-                    current = string.Empty;
-                }
-                else
-                {
-                    current += c;
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(current))
-            {
-                items.Add(current.Trim());
-            }
-
-            var array = new JArray();
-            foreach (var item in items)
-            {
-                array.Add(JToken.FromObject(ParseValue(item)));
-            }
-            return array;
-        }
-
-        private JObject ParseInlineTable(string tableStr)
-        {
-            var content = tableStr.Substring(1, tableStr.Length - 2).Trim();
-            var result = new JObject();
-
-            if (string.IsNullOrEmpty(content))
-                return result;
-
-            var pairs = new List<string>();
-            var current = string.Empty;
-            int depth = 0;
-            var inString = false;
-            char stringChar = '"';
-
-            foreach (char c in content)
-            {
-                if (!inString && (c == '"' || c == '\''))
-                {
-                    inString = true;
-                    stringChar = c;
-                    current += c;
-                }
-                else if (inString && c == stringChar)
-                {
-                    inString = false;
-                    current += c;
-                }
-                else if (!inString && (c == '[' || c == '{'))
-                {
-                    depth++;
-                    current += c;
-                }
-                else if (!inString && (c == ']' || c == '}'))
-                {
-                    depth--;
-                    current += c;
-                }
-                else if (!inString && c == ',' && depth == 0)
-                {
-                    pairs.Add(current.Trim());
-                    current = string.Empty;
-                }
-                else
-                {
-                    current += c;
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(current))
-            {
-                pairs.Add(current.Trim());
-            }
-
-            foreach (var pair in pairs)
-            {
-                var equalIndex = pair.IndexOf('=');
-                if (equalIndex > 0)
-                {
-                    var key = pair.Substring(0, equalIndex).Trim();
-                    var value = pair.Substring(equalIndex + 1).Trim();
-                    result[key] = JToken.FromObject(ParseValue(value));
-                }
-            }
-
-            return result;
-        }
-
-        private static void SetValue(JObject obj, string key, object value)
-        {
-            if (key.Contains('.'))
-            {
-                var keys = key.Split('.');
-                var current = obj;
-
-                for (int i = 0; i < keys.Length - 1; i++)
-                {
-                    if (!current.ContainsKey(keys[i]))
-                    {
-                        current[keys[i]] = new JObject();
-                    }
-                    current = (JObject)current[keys[i]];
-                }
-
-                current[keys.Last()] = JToken.FromObject(value);
-            }
-            else
-            {
-                obj[key] = JToken.FromObject(value);
-            }
-        }
-
-        private static string UnescapeString(string str)
-        {
-            return str.Replace("\\\"", "\"")
-                     .Replace("\\\\", "\\")
-                     .Replace("\\n", "\n")
-                     .Replace("\\r", "\r")
-                     .Replace("\\t", "\t");
-        }
-
-        private JToken SortKeysRecursively(JToken token)
-        {
-            return token.Type switch
-            {
-                JTokenType.Object => SortJObject((JObject)token),
-                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
-                _ => token
-            };
-        }
-
-        private JObject SortJObject(JObject obj)
-        {
-            var sorted = new JObject();
-            foreach (var property in obj.Properties().OrderBy(p => p.Name))
-            {
-                sorted[property.Name] = SortKeysRecursively(property.Value);
-            }
-            return sorted;
         }
     }
 }
