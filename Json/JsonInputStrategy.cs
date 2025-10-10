@@ -16,14 +16,13 @@ namespace FormatConverter.Json
                     : throw new ArgumentException("JSON input cannot be null or empty");
             }
 
+            json = PreprocessJson(json);
+
             var settings = CreateJsonLoadSettings();
 
             try
             {
                 var token = JToken.Parse(json, settings);
-
-                if (Config.SortKeys)
-                    token = SortKeysRecursively(token);
 
                 return token;
             }
@@ -33,7 +32,7 @@ namespace FormatConverter.Json
             }
         }
 
-        public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken)
+        public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(path))
                 throw new ArgumentException("Path cannot be null or empty.", nameof(path));
@@ -54,11 +53,7 @@ namespace FormatConverter.Json
             {
                 fileStream = File.OpenRead(path);
                 streamReader = new StreamReader(fileStream, Config.Encoding, true);
-                jsonReader = new JsonTextReader(streamReader)
-                {
-                    SupportMultipleContent = true,
-                    DateParseHandling = DateParseHandling.None
-                };
+                jsonReader = CreateJsonTextReader(streamReader);
 
                 var fileSize = fileStream.Length;
                 var showProgress = fileSize > 10_485_760;
@@ -112,9 +107,6 @@ namespace FormatConverter.Json
             {
                 var token = JToken.ReadFrom(jsonReader, settings);
 
-                if (Config.SortKeys)
-                    token = SortKeysRecursively(token);
-
                 return token;
             }
             catch (JsonReaderException ex)
@@ -130,6 +122,15 @@ namespace FormatConverter.Json
             }
         }
 
+        private JsonTextReader CreateJsonTextReader(StreamReader streamReader)
+        {
+            return new JsonTextReader(streamReader)
+            {
+                SupportMultipleContent = true,
+                DateParseHandling = DateParseHandling.None
+            };
+        }
+
         private JsonLoadSettings CreateJsonLoadSettings()
         {
             return new JsonLoadSettings
@@ -140,6 +141,84 @@ namespace FormatConverter.Json
                     : DuplicatePropertyNameHandling.Replace,
                 LineInfoHandling = Config.StrictMode ? LineInfoHandling.Load : LineInfoHandling.Ignore
             };
+        }
+
+        private string PreprocessJson(string json)
+        {
+            if (Config.JsonAllowSingleQuotes)
+            {
+                json = ConvertSingleQuotesToDouble(json);
+            }
+
+            if (Config.JsonAllowTrailingCommas)
+            {
+                json = RemoveTrailingCommas(json);
+            }
+
+            if (!Config.JsonStrictPropertyNames)
+            {
+                json = AddQuotesToPropertyNames(json);
+            }
+
+            return json;
+        }
+
+        private static string ConvertSingleQuotesToDouble(string json)
+        {
+            var result = new StringBuilder(json.Length);
+            var inString = false;
+            var quoteChar = '\0';
+            var escaped = false;
+
+            for (int i = 0; i < json.Length; i++)
+            {
+                var c = json[i];
+
+                if (escaped)
+                {
+                    result.Append(c);
+                    escaped = false;
+                    continue;
+                }
+
+                if (c == '\\' && inString)
+                {
+                    result.Append(c);
+                    escaped = true;
+                    continue;
+                }
+
+                if ((c == '\'' || c == '"') && !inString)
+                {
+                    inString = true;
+                    quoteChar = c;
+                    result.Append('"');
+                }
+                else if (c == quoteChar && inString)
+                {
+                    inString = false;
+                    quoteChar = '\0';
+                    result.Append('"');
+                }
+                else
+                {
+                    result.Append(c);
+                }
+            }
+
+            return result.ToString();
+        }
+
+        private static string RemoveTrailingCommas(string json)
+        {
+            var pattern = @",(\s*[\]}])";
+            return System.Text.RegularExpressions.Regex.Replace(json, pattern, "$1");
+        }
+
+        private static string AddQuotesToPropertyNames(string json)
+        {
+            var pattern = @"(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:";
+            return System.Text.RegularExpressions.Regex.Replace(json, pattern, "$1\"$2\":");
         }
 
         private JObject HandleParsingError(JsonReaderException ex, string input)

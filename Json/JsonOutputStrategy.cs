@@ -1,14 +1,13 @@
 ﻿using FormatConverter.Interfaces;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json.Converters;
 using System.Text;
 
 namespace FormatConverter.Json
 {
     public class JsonOutputStrategy : BaseOutputStrategy
     {
-        private const int DEFAULT_CHUNK_SIZE = 100;
-
         public override string Serialize(JToken data)
         {
             if (data == null)
@@ -20,84 +19,89 @@ namespace FormatConverter.Json
             return SerializeToken(processed, JsonSerializer.Create(settings));
         }
 
-        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
+        public override void SerializeStream(IEnumerable<JToken> data, Stream output, CancellationToken cancellationToken = default)
         {
             if (data == null)
                 throw new ArgumentNullException(nameof(data));
+            if (output == null)
+                throw new ArgumentNullException(nameof(output));
 
             var settings = CreateJsonSerializerSettings();
             var serializer = JsonSerializer.Create(settings);
-
-            foreach (var chunk in StreamTokens(data, serializer))
-                yield return chunk;
-        }
-
-        private IEnumerable<string> StreamTokens(IEnumerable<JToken> tokens, JsonSerializer serializer)
-        {
-            var chunkSize = GetChunkSize();
             var needsPretty = NeedsPretty();
+            var chunkSize = GetChunkSize();
+
+            using var writer = new StreamWriter(output, Config.Encoding, 8192, leaveOpen: true);
+            using var jsonWriter = new JsonTextWriter(writer);
+
+            ConfigureJsonWriter(jsonWriter);
+
             var buffer = new List<JToken>();
-            var firstChunk = true;
 
-            yield return needsPretty ? "[\n" : "[";
+            jsonWriter.WriteStartArray();
 
-            foreach (var token in tokens)
+            foreach (var token in data)
             {
-                buffer.Add(token);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var processed = ProcessDataBeforeSerialization(token);
+                buffer.Add(processed);
 
                 if (buffer.Count >= chunkSize)
                 {
-                    yield return SerializeChunk(buffer, serializer, !firstChunk);
+                    WriteChunkToStream(buffer, serializer, jsonWriter, cancellationToken);
                     buffer.Clear();
-                    firstChunk = false;
                 }
             }
 
             if (buffer.Count > 0)
             {
-                yield return SerializeChunk(buffer, serializer, !firstChunk);
+                cancellationToken.ThrowIfCancellationRequested();
+                WriteChunkToStream(buffer, serializer, jsonWriter, cancellationToken);
             }
 
-            yield return needsPretty ? "\n]" : "]";
+            jsonWriter.WriteEndArray();
+            jsonWriter.Flush();
+            writer.Flush();
         }
 
-        private string SerializeChunk(List<JToken> items, JsonSerializer serializer, bool includeComma)
+        public void SerializeStream(IEnumerable<JToken> data, string outputPath, CancellationToken cancellationToken = default)
         {
-            if (items.Count == 0) return string.Empty;
+            if (string.IsNullOrEmpty(outputPath))
+                throw new ArgumentNullException(nameof(outputPath));
 
-            var chunkBuilder = new StringBuilder();
-            var needsPretty = NeedsPretty();
-            var indent = needsPretty ? new string(' ', Config.IndentSize ?? 2) : "";
+            using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192);
+            SerializeStream(data, fileStream, cancellationToken);
+        }
 
-            if (includeComma)
-            {
-                chunkBuilder.Append(",");
-                if (needsPretty) chunkBuilder.Append('\n');
-            }
+        private void WriteChunkToStream(List<JToken> items, JsonSerializer serializer, JsonTextWriter jsonWriter, CancellationToken ct)
+        {
+            if (items.Count == 0) return;
 
             for (int i = 0; i < items.Count; i++)
             {
-                if (i > 0)
-                {
-                    chunkBuilder.Append(",");
-                    if (needsPretty) chunkBuilder.Append('\n');
-                }
+                ct.ThrowIfCancellationRequested();
 
-                if (needsPretty) chunkBuilder.Append(indent);
+                if (jsonWriter.WriteState == WriteState.Array && i > 0)
+                    jsonWriter.WriteRaw(",");
 
                 try
                 {
-                    var itemJson = SerializeToken(items[i], serializer);
-                    chunkBuilder.Append(itemJson);
+                    serializer.Serialize(jsonWriter, items[i]);
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
-                    var errorJson = CreateErrorJson(ex.Message, items[i]);
-                    chunkBuilder.Append(errorJson);
+                    var errorObj = new JObject
+                    {
+                        ["error"] = ex.Message,
+                        ["original_type"] = items[i].Type.ToString(),
+                        ["timestamp"] = DateTime.UtcNow
+                    };
+                    serializer.Serialize(jsonWriter, errorObj);
                 }
             }
 
-            return chunkBuilder.ToString();
+            jsonWriter.Flush();
         }
 
         private string SerializeToken(JToken token, JsonSerializer serializer)
@@ -110,11 +114,7 @@ namespace FormatConverter.Json
             try
             {
                 serializer.Serialize(writer, token);
-                var result = sw.ToString();
-
-                return Config.JsonSingleQuotes && !Config.Minify
-                    ? ConvertToSingleQuotes(result)
-                    : result;
+                return sw.ToString();
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
@@ -126,18 +126,78 @@ namespace FormatConverter.Json
         {
             var result = data;
 
+            if (Config.FlattenArrays)
+                result = FlattenArraysRecursively(result);
+
             if (Config.SortKeys)
                 result = SortKeysRecursively(result);
 
             if (Config.ArrayWrap && result.Type != JTokenType.Array)
                 result = new JArray(result);
 
+            if (Config.NoMetadata)
+                result = RemoveMetadata(result);
+
+            if (Config.MaxDepth.HasValue)
+                result = LimitDepth(result, Config.MaxDepth.Value);
+
             return result;
+        }
+
+        private JToken RemoveMetadata(JToken token)
+        {
+            if (token.Type == JTokenType.Object)
+            {
+                var obj = (JObject)token;
+                var metadataKeys = new[] { "$schema", "$id", "$comment", "$ref", "_metadata", "__meta__", "__type" };
+                var cleaned = new JObject();
+
+                foreach (var prop in obj.Properties())
+                {
+                    if (!metadataKeys.Contains(prop.Name))
+                    {
+                        cleaned[prop.Name] = RemoveMetadata(prop.Value);
+                    }
+                }
+
+                return cleaned;
+            }
+            else if (token.Type == JTokenType.Array)
+            {
+                return new JArray(((JArray)token).Select(RemoveMetadata));
+            }
+
+            return token;
+        }
+
+        private static JToken LimitDepth(JToken token, int maxDepth, int currentDepth = 0)
+        {
+            if (currentDepth >= maxDepth)
+            {
+                return token.Type switch
+                {
+                    JTokenType.Object => new JObject(),
+                    JTokenType.Array => new JArray(),
+                    _ => token
+                };
+            }
+
+            return token.Type switch
+            {
+                JTokenType.Object => new JObject(
+                    ((JObject)token).Properties()
+                        .Select(p => new JProperty(p.Name, LimitDepth(p.Value, maxDepth, currentDepth + 1)))
+                ),
+                JTokenType.Array => new JArray(
+                    ((JArray)token).Select(item => LimitDepth(item, maxDepth, currentDepth + 1))
+                ),
+                _ => token
+            };
         }
 
         private bool NeedsPretty() => !Config.Minify && Config.PrettyPrint;
 
-        private int GetChunkSize() => Config.ChunkSize > 0 ? Config.ChunkSize : DEFAULT_CHUNK_SIZE;
+        private int GetChunkSize() => Config.ChunkSize > 0 ? Config.ChunkSize : 100;
 
         private JsonSerializerSettings CreateJsonSerializerSettings()
         {
@@ -145,6 +205,7 @@ namespace FormatConverter.Json
             {
                 Formatting = Config.Minify ? Formatting.None :
                             Config.PrettyPrint ? Formatting.Indented : Formatting.None,
+
                 StringEscapeHandling = Config.JsonEscapeUnicode ?
                                        StringEscapeHandling.EscapeNonAscii :
                                        StringEscapeHandling.Default
@@ -153,14 +214,37 @@ namespace FormatConverter.Json
             if (!string.IsNullOrEmpty(Config.DateFormat))
             {
                 if (Config.DateFormat.Equals("iso8601", StringComparison.OrdinalIgnoreCase))
+                {
                     settings.DateFormatHandling = DateFormatHandling.IsoDateFormat;
+                    settings.DateFormatString = "yyyy-MM-ddTHH:mm:ss.fffZ";
+                }
+                else if (Config.DateFormat.Equals("unix", StringComparison.OrdinalIgnoreCase))
+                {
+                    settings.Converters.Add(new UnixDateTimeConverter());
+                    settings.DateFormatHandling = DateFormatHandling.IsoDateFormat;
+                }
+                else if (Config.DateFormat.Equals("rfc3339", StringComparison.OrdinalIgnoreCase))
+                {
+                    settings.DateFormatHandling = DateFormatHandling.IsoDateFormat;
+                    settings.DateFormatString = "yyyy-MM-dd'T'HH:mm:ss.fffzzz";
+                }
                 else
+                {
                     settings.DateFormatString = Config.DateFormat;
+                }
             }
 
             if (Config.IgnoreErrors)
             {
-                settings.Error = (s, e) => e.ErrorContext.Handled = true;
+                settings.Error = (s, e) =>
+                {
+                    e.ErrorContext.Handled = true;
+                };
+            }
+
+            if (Config.StrictMode)
+            {
+                settings.MissingMemberHandling = MissingMemberHandling.Error;
             }
 
             return settings;
@@ -168,45 +252,27 @@ namespace FormatConverter.Json
 
         private void ConfigureJsonWriter(JsonTextWriter writer)
         {
-            if (Config.IndentSize.HasValue && NeedsPretty())
+            if (NeedsPretty())
             {
-                writer.Indentation = Config.IndentSize.Value;
-                writer.IndentChar = Config.IndentSize.Value == 0 ? '\t' : ' ';
-            }
-
-            writer.QuoteChar = Config.JsonSingleQuotes ? '\'' : '"';
-        }
-
-        private static string ConvertToSingleQuotes(string jsonString)
-        {
-            var sb = new StringBuilder(jsonString.Length);
-            bool inString = false;
-            char? prevChar = null;
-
-            for (int i = 0; i < jsonString.Length; i++)
-            {
-                char c = jsonString[i];
-
-                if (c == '"' && prevChar != '\\')
+                if (Config.IndentSize.HasValue)
                 {
-                    sb.Append('\'');
-                    inString = !inString;
-                }
-                else if (c == '\\' && prevChar == '\\')
-                {
-                    sb.Append(c);
-                    prevChar = null;
-                    continue;
+                    if (Config.IndentSize.Value == 0)
+                    {
+                        writer.Indentation = 1;
+                        writer.IndentChar = '\t';
+                    }
+                    else
+                    {
+                        writer.Indentation = Config.IndentSize.Value;
+                        writer.IndentChar = ' ';
+                    }
                 }
                 else
                 {
-                    sb.Append(c);
+                    writer.Indentation = 2;
+                    writer.IndentChar = ' ';
                 }
-
-                prevChar = c;
             }
-
-            return sb.ToString();
         }
 
         private string CreateErrorJson(string errorMessage, JToken originalToken)
@@ -215,7 +281,7 @@ namespace FormatConverter.Json
             {
                 ["error"] = errorMessage,
                 ["original_type"] = originalToken.Type.ToString(),
-                ["timestamp"] = FormatDateTime(DateTime.UtcNow)
+                ["timestamp"] = DateTime.UtcNow
             };
 
             return Config.Minify

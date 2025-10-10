@@ -13,7 +13,7 @@ namespace FormatConverter.Interfaces
 
         public abstract string Serialize(JToken data);
 
-        public abstract IEnumerable<string> SerializeStream(IEnumerable<JToken> data);
+        public abstract void SerializeStream(IEnumerable<JToken> data, Stream output, CancellationToken cancellationToken = default);
 
         protected JToken SortKeysRecursively(JToken token)
         {
@@ -56,42 +56,31 @@ namespace FormatConverter.Interfaces
                 .Select(p => new JProperty(p.Name, SortKeysRecursively(p.Value))));
         }
 
-        protected string FormatValue(object value)
+        protected static JToken FlattenArraysRecursively(JToken token)
         {
-            if (value == null) return string.Empty;
+            if (token.Type != JTokenType.Array)
+                return token;
 
-            return value switch
-            {
-                DateTime dt => FormatDateTime(dt),
-                double d when !string.IsNullOrEmpty(Config.NumberFormat) => FormatNumber(d),
-                float f when !string.IsNullOrEmpty(Config.NumberFormat) => FormatNumber(f),
-                decimal m when !string.IsNullOrEmpty(Config.NumberFormat) => FormatNumber((double)m),
-                _ => value.ToString() ?? string.Empty
-            };
-        }
+            var array = (JArray)token;
+            var flattened = new JArray();
 
-        protected string FormatDateTime(DateTime dateTime)
-        {
-            if (!string.IsNullOrEmpty(Config.DateFormat))
+            foreach (var item in array)
             {
-                return Config.DateFormat.ToLower() switch
+                if (item.Type == JTokenType.Array)
                 {
-                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                    _ => dateTime.ToString(Config.DateFormat)
-                };
+                    var flattenedChild = FlattenArraysRecursively(item);
+                    foreach (var child in (JArray)flattenedChild)
+                    {
+                        flattened.Add(child);
+                    }
+                }
+                else
+                {
+                    flattened.Add(item);
+                }
             }
 
-            return dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fff");
-        }
-
-        protected string FormatNumber(double number)
-        {
-            return Config.NumberFormat?.ToLower() switch
-            {
-                "hexadecimal" => $"0x{(long)number:X}",
-                "scientific" => number.ToString("E"),
-                _ => number.ToString()
-            };
+            return flattened;
         }
     }
 }
