@@ -11,13 +11,14 @@ namespace FormatConverter.Xml
     public class XmlOutputStrategy : BaseOutputStrategy
     {
         private const int DEFAULT_CHUNK_SIZE = 100;
+        private XNamespace _currentNamespace = XNamespace.None;
 
         public override string Serialize(JToken data)
         {
             if (data == null)
                 throw new ArgumentNullException(nameof(data));
 
-            var processed = ProcessDataBeforeSerialization(data);
+            var processed = PreprocessToken(data);
 
             try
             {
@@ -29,90 +30,157 @@ namespace FormatConverter.Xml
             }
         }
 
-        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
+        public override void SerializeStream(IEnumerable<JToken> data, Stream output, CancellationToken cancellationToken = default)
         {
             if (data == null)
                 throw new ArgumentNullException(nameof(data));
+            if (output == null)
+                throw new ArgumentNullException(nameof(output));
 
-            foreach (var chunk in StreamTokens(data))
-                yield return chunk;
-        }
-
-        private IEnumerable<string> StreamTokens(IEnumerable<JToken> tokens)
-        {
-            var chunkSize = GetChunkSize();
             var needsPretty = NeedsPretty();
-            var buffer = new List<JToken>();
-            var firstChunk = true;
+            var chunkSize = GetChunkSize();
             var rootName = SanitizeElementName(Config.XmlRootElement ?? "root");
             var settings = CreateXmlWriterSettings();
 
-            yield return CreateXmlHeader();
-            yield return CreateOpeningTag(rootName);
-            if (needsPretty) yield return "\n";
+            _currentNamespace = string.IsNullOrEmpty(Config.XmlNamespace)
+                ? XNamespace.None
+                : XNamespace.Get(Config.XmlNamespace);
 
-            foreach (var token in tokens)
+            using var writer = new StreamWriter(output, Config.Encoding, 8192, leaveOpen: true);
+
+            if (Config.XmlIncludeDeclaration)
             {
-                buffer.Add(token);
+                var standalone = Config.XmlStandalone ? " standalone=\"yes\"" : "";
+                writer.Write($"<?xml version=\"1.0\" encoding=\"{Config.Encoding.WebName}\"{standalone}?>");
+                if (needsPretty) writer.Write("\n");
+            }
+
+            writer.Write(CreateOpeningTag(rootName));
+            if (needsPretty) writer.Write("\n");
+
+            var buffer = new List<JToken>();
+
+            foreach (var token in data)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var processed = PreprocessToken(token);
+                buffer.Add(processed);
 
                 if (buffer.Count >= chunkSize)
                 {
-                    yield return SerializeChunk(buffer, !firstChunk, settings);
+                    WriteChunkToStream(buffer, writer, settings, cancellationToken);
                     buffer.Clear();
-                    firstChunk = false;
                 }
             }
 
             if (buffer.Count > 0)
             {
-                yield return SerializeChunk(buffer, !firstChunk, settings);
+                cancellationToken.ThrowIfCancellationRequested();
+                WriteChunkToStream(buffer, writer, settings, cancellationToken);
             }
 
-            if (needsPretty) yield return "\n";
-            yield return $"</{rootName}>";
+            if (needsPretty) writer.Write("\n");
+            writer.Write($"</{rootName}>");
+
+            writer.Flush();
         }
 
-        private string SerializeChunk(List<JToken> items, bool includeNewline, XmlWriterSettings settings)
+        public void SerializeStream(IEnumerable<JToken> data, string outputPath, CancellationToken cancellationToken = default)
         {
-            if (items.Count == 0) return string.Empty;
+            if (string.IsNullOrEmpty(outputPath))
+                throw new ArgumentNullException(nameof(outputPath));
 
-            var chunkBuilder = new StringBuilder();
+            using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192);
+            SerializeStream(data, fileStream, cancellationToken);
+        }
+
+        private void WriteChunkToStream(List<JToken> items, StreamWriter writer, XmlWriterSettings settings, CancellationToken ct)
+        {
+            if (items.Count == 0) return;
+
             var needsPretty = NeedsPretty();
             var indent = needsPretty ? new string(' ', Config.IndentSize ?? 2) : "";
 
             for (int i = 0; i < items.Count; i++)
             {
-                if ((includeNewline || i > 0) && needsPretty)
-                {
-                    chunkBuilder.Append('\n');
-                }
+                ct.ThrowIfCancellationRequested();
 
-                if (needsPretty) chunkBuilder.Append(indent);
+                if (needsPretty) writer.Write(indent);
 
                 try
                 {
                     var itemXml = SerializeTokenToXml(items[i], "item", settings);
-                    chunkBuilder.Append(itemXml);
+                    writer.Write(itemXml);
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
-                    var errorXml = CreateSafeErrorXmlElement($"item_{i}", ex.Message);
-                    chunkBuilder.Append(errorXml);
+                    var errorXml = CreateErrorElement($"item_{i}", ex.Message, ex.GetType().Name);
+                    writer.Write(errorXml);
                 }
+
+                if (needsPretty) writer.Write("\n");
             }
 
-            return chunkBuilder.ToString();
+            writer.Flush();
         }
 
         private string SerializeToXml(JToken data)
         {
             var rootName = SanitizeElementName(Config.XmlRootElement ?? "root");
-            var root = new XElement(rootName);
+
+            _currentNamespace = string.IsNullOrEmpty(Config.XmlNamespace)
+                ? XNamespace.None
+                : XNamespace.Get(Config.XmlNamespace);
+
+            var root = new XElement(_currentNamespace + rootName);
 
             ConfigureNamespace(root);
             ConvertJTokenToXElement(data, root);
 
-            return CreateXmlDocument(root);
+            var result = CreateXmlDocument(root);
+
+            if (Config.StrictMode)
+            {
+                ValidateXml(result);
+            }
+
+            return result;
+        }
+
+        private void ValidateXml(string xml)
+        {
+            try
+            {
+                var doc = XDocument.Parse(xml);
+
+                foreach (var element in doc.Descendants())
+                {
+                    try
+                    {
+                        XmlConvert.VerifyName(element.Name.LocalName);
+                    }
+                    catch (XmlException ex)
+                    {
+                        throw new InvalidOperationException(
+                            $"Invalid XML element name '{element.Name.LocalName}': {ex.Message}", ex);
+                    }
+                }
+
+                foreach (var attribute in doc.Descendants().SelectMany(e => e.Attributes()))
+                {
+                    try
+                    {
+                        XmlConvert.VerifyName(attribute.Name.LocalName);
+                    }
+                    catch (XmlException ex)
+                    {
+                        throw new InvalidOperationException(
+                            $"Invalid XML attribute name '{attribute.Name.LocalName}': {ex.Message}", ex);
+                    }
+                }
+            }
+            catch when (!Config.StrictMode) { }
         }
 
         private string CreateXmlDocument(XElement root)
@@ -143,7 +211,7 @@ namespace FormatConverter.Xml
 
         private string SerializeTokenToXml(JToken token, string elementName, XmlWriterSettings settings)
         {
-            var element = new XElement(SanitizeElementName(elementName));
+            var element = new XElement(_currentNamespace + SanitizeElementName(elementName));
             ConvertJTokenToXElement(token, element);
 
             var writerSettings = settings ?? CreateXmlWriterSettings();
@@ -173,7 +241,7 @@ namespace FormatConverter.Xml
 
                 case JTokenType.Property:
                     var prop = (JProperty)token;
-                    var childElement = new XElement(SanitizeElementName(prop.Name));
+                    var childElement = new XElement(_currentNamespace + SanitizeElementName(prop.Name));
                     ConvertJTokenToXElement(prop.Value, childElement);
                     parent.Add(childElement);
                     break;
@@ -181,7 +249,7 @@ namespace FormatConverter.Xml
                 default:
                     if (token is JValue jValue)
                     {
-                        AddValueToElement(parent, jValue.Value);
+                        AddValueToElement(parent, jValue.Value!);
                     }
                     break;
             }
@@ -205,9 +273,14 @@ namespace FormatConverter.Xml
                 {
                     AddValueToElement(parent, property.Value);
                 }
+                else if (Config.XmlUseAttributes && IsSimpleValue(property.Value))
+                {
+                    var attrValue = FormatValue(property.Value);
+                    parent.SetAttributeValue(SanitizeElementName(property.Name), attrValue);
+                }
                 else
                 {
-                    var element = new XElement(SanitizeElementName(property.Name));
+                    var element = new XElement(_currentNamespace + SanitizeElementName(property.Name));
                     ConvertJTokenToXElement(property.Value, element);
                     parent.Add(element);
                 }
@@ -218,7 +291,7 @@ namespace FormatConverter.Xml
         {
             foreach (var item in jArray)
             {
-                var itemElement = new XElement("item");
+                var itemElement = new XElement(_currentNamespace + "item");
                 ConvertJTokenToXElement(item, itemElement);
                 parent.Add(itemElement);
             }
@@ -240,17 +313,14 @@ namespace FormatConverter.Xml
             }
         }
 
-        private JToken ProcessDataBeforeSerialization(JToken data)
+        private static bool IsSimpleValue(JToken token)
         {
-            var result = data;
-
-            if (Config.SortKeys)
-                result = SortKeysRecursively(result);
-
-            if (Config.ArrayWrap && result.Type != JTokenType.Array)
-                result = new JArray(result);
-
-            return result;
+            return token.Type == JTokenType.String ||
+                   token.Type == JTokenType.Integer ||
+                   token.Type == JTokenType.Float ||
+                   token.Type == JTokenType.Boolean ||
+                   token.Type == JTokenType.Null ||
+                   token.Type == JTokenType.Date;
         }
 
         private bool NeedsPretty() => !Config.Minify && Config.PrettyPrint;
@@ -267,14 +337,6 @@ namespace FormatConverter.Xml
                 OmitXmlDeclaration = !Config.XmlIncludeDeclaration,
                 NewLineHandling = Config.Minify ? NewLineHandling.None : NewLineHandling.Replace
             };
-        }
-
-        private string CreateXmlHeader()
-        {
-            if (!Config.XmlIncludeDeclaration) return string.Empty;
-
-            var standalone = Config.XmlStandalone ? " standalone=\"yes\"" : "";
-            return $"<?xml version=\"1.0\" encoding=\"{Config.Encoding.WebName}\"{standalone}?>";
         }
 
         private string CreateOpeningTag(string rootName)
@@ -301,8 +363,6 @@ namespace FormatConverter.Xml
         {
             if (string.IsNullOrEmpty(Config.XmlNamespace)) return;
 
-            var ns = XNamespace.Get(Config.XmlNamespace);
-
             if (!string.IsNullOrEmpty(Config.XmlNamespacePrefix))
             {
                 root.Add(new XAttribute(XNamespace.Xmlns + Config.XmlNamespacePrefix, Config.XmlNamespace));
@@ -311,15 +371,15 @@ namespace FormatConverter.Xml
             {
                 root.Add(new XAttribute("xmlns", Config.XmlNamespace));
             }
-
-            root.Name = ns + root.Name.LocalName;
         }
 
-        private string CreateSafeErrorXmlElement(string elementName, string errorMessage)
+        private string CreateErrorElement(string elementName, string errorMessage, string errorType)
         {
             var element = new XElement(
-                SanitizeElementName(elementName),
-                new XAttribute("error", errorMessage)
+                _currentNamespace + SanitizeElementName(elementName),
+                new XAttribute("error", errorMessage),
+                new XAttribute("error_type", errorType),
+                new XAttribute("timestamp", DateTime.UtcNow.ToString("o"))
             );
 
             using var stringWriter = new StringWriter();
@@ -333,9 +393,9 @@ namespace FormatConverter.Xml
 
         private string CreateErrorXml(string errorMessage)
         {
-            var errorElement = new XElement("error",
+            var errorElement = new XElement(_currentNamespace + "error",
                 new XElement("message", errorMessage),
-                new XElement("timestamp", FormatDateTime(DateTime.UtcNow))
+                new XElement("timestamp", DateTime.UtcNow.ToString("o"))
             );
 
             return CreateXmlDocument(errorElement);
@@ -345,9 +405,7 @@ namespace FormatConverter.Xml
             => text.IndexOfAny(['<', '>', '&', '"', '\'']) >= 0;
 
         private static string EscapeCDataContent(string text)
-        {
-            return text.Replace("]]>", "]]]]><![CDATA[>");
-        }
+            => text.Replace("]]>", "]]]]><![CDATA[>");
 
         private static string SanitizeElementName(string name)
         {

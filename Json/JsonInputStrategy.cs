@@ -2,6 +2,7 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace FormatConverter.Json
 {
@@ -13,7 +14,7 @@ namespace FormatConverter.Json
             {
                 return Config.IgnoreErrors
                     ? new JObject()
-                    : throw new ArgumentException("JSON input cannot be null or empty");
+                    : throw new ArgumentException("JSON input cannot be null or empty", nameof(json));
             }
 
             json = PreprocessJson(json);
@@ -22,9 +23,7 @@ namespace FormatConverter.Json
 
             try
             {
-                var token = JToken.Parse(json, settings);
-
-                return token;
+                return JToken.Parse(json, settings);
             }
             catch (JsonReaderException ex)
             {
@@ -45,59 +44,42 @@ namespace FormatConverter.Json
 
         private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
         {
-            FileStream? fileStream = null;
-            StreamReader? streamReader = null;
-            JsonTextReader? jsonReader = null;
+            using var fileStream = File.OpenRead(path);
+            using var streamReader = new StreamReader(fileStream, Config.Encoding, detectEncodingFromByteOrderMarks: true);
+            using var jsonReader = CreateJsonTextReader(streamReader);
 
-            try
+            var fileSize = fileStream.Length;
+            var showProgress = fileSize > 10_485_760;
+            var tokensProcessed = 0;
+            var settings = CreateJsonLoadSettings();
+
+            while (jsonReader.Read())
             {
-                fileStream = File.OpenRead(path);
-                streamReader = new StreamReader(fileStream, Config.Encoding, true);
-                jsonReader = CreateJsonTextReader(streamReader);
+                cancellationToken.ThrowIfCancellationRequested();
 
-                var fileSize = fileStream.Length;
-                var showProgress = fileSize > 10_485_760;
-                var tokensProcessed = 0;
-
-                var settings = CreateJsonLoadSettings();
-
-                while (jsonReader.Read())
+                if (jsonReader.TokenType == JsonToken.StartObject ||
+                    jsonReader.TokenType == JsonToken.StartArray)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    var token = ReadToken(jsonReader, settings, path);
 
-                    if (jsonReader.TokenType == JsonToken.StartObject ||
-                        jsonReader.TokenType == JsonToken.StartArray)
+                    if (token != null)
                     {
-                        var token = ReadToken(jsonReader, settings, path);
+                        tokensProcessed++;
 
-                        if (token != null)
+                        if (showProgress && tokensProcessed % 100 == 0)
                         {
-                            tokensProcessed++;
-
-                            if (showProgress)
-                            {
-                                if (showProgress && tokensProcessed % 100 == 0)
-                                {
-                                    var progress = (double)fileStream.Position / fileSize * 100;
-                                    Console.Error.Write($"\rProcessing: {progress:F1}% ({tokensProcessed} elements)");
-                                }
-                            }
-
-                            yield return token;
+                            var progress = (double)fileStream.Position / fileSize * 100;
+                            Console.Error.Write($"\rProcessing: {progress:F1}% ({tokensProcessed} elements)");
                         }
+
+                        yield return token;
                     }
                 }
-
-                if (showProgress)
-                {
-                    Console.Error.WriteLine($"\rCompleted: {tokensProcessed} objects processed");
-                }
             }
-            finally
+
+            if (showProgress)
             {
-                jsonReader?.Close();
-                streamReader?.Dispose();
-                fileStream?.Dispose();
+                Console.Error.WriteLine($"\rCompleted: {tokensProcessed} objects processed");
             }
         }
 
@@ -105,20 +87,20 @@ namespace FormatConverter.Json
         {
             try
             {
-                var token = JToken.ReadFrom(jsonReader, settings);
-
-                return token;
+                return JToken.ReadFrom(jsonReader, settings);
             }
             catch (JsonReaderException ex)
             {
                 if (Config.IgnoreErrors)
                 {
-                    Console.Error.WriteLine($"Warning: JSON streaming error ignored: {ex.Message}");
-                    return HandleParsingError(ex, path);
+                    Console.Error.WriteLine($"Warning: JSON streaming error at line {jsonReader.LineNumber}, " +
+                                          $"position {jsonReader.LinePosition}: {ex.Message}");
+                    return CreateErrorToken(ex, jsonReader);
                 }
 
-                throw new FormatException($"Invalid JSON at line {jsonReader.LineNumber}," +
-                    $" position {jsonReader.LinePosition}: {ex.Message}", ex);
+                throw new FormatException(
+                    $"Invalid JSON at line {jsonReader.LineNumber}, position {jsonReader.LinePosition}: {ex.Message}",
+                    ex);
             }
         }
 
@@ -127,7 +109,8 @@ namespace FormatConverter.Json
             return new JsonTextReader(streamReader)
             {
                 SupportMultipleContent = true,
-                DateParseHandling = DateParseHandling.None
+                DateParseHandling = DateParseHandling.None,
+                MaxDepth = Config.MaxDepth
             };
         }
 
@@ -210,32 +193,49 @@ namespace FormatConverter.Json
         }
 
         private static string RemoveTrailingCommas(string json)
-        {
-            var pattern = @",(\s*[\]}])";
-            return System.Text.RegularExpressions.Regex.Replace(json, pattern, "$1");
-        }
+            => Regex.Replace(json, @",(\s*[\]}])", "$1");
 
         private static string AddQuotesToPropertyNames(string json)
-        {
-            var pattern = @"(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:";
-            return System.Text.RegularExpressions.Regex.Replace(json, pattern, "$1\"$2\":");
-        }
+            => Regex.Replace(json, @"(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:", "$1\"$2\":");
 
         private JObject HandleParsingError(JsonReaderException ex, string input)
         {
             if (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: JSON parsing error ignored: {ex.Message}");
-                return new JObject
-                {
-                    ["error"] = ex.Message,
-                    ["raw"] = input.Length > 1000
-                        ? string.Concat(input.AsSpan(0, 1000), "...")
-                        : input
-                };
+                Console.Error.WriteLine($"Warning: JSON parsing error: {ex.Message}");
+                return CreateErrorToken(ex, input);
             }
 
             throw new FormatException($"Invalid JSON: {ex.Message}", ex);
+        }
+
+        private static JObject CreateErrorToken(JsonReaderException ex, JsonTextReader reader)
+        {
+            return new JObject
+            {
+                ["error"] = ex.Message,
+                ["error_type"] = ex.GetType().Name,
+                ["line"] = reader.LineNumber,
+                ["position"] = reader.LinePosition,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
+            };
+        }
+
+        private static JObject CreateErrorToken(JsonReaderException ex, string input)
+        {
+            var snippet = input.Length > 1000
+                ? string.Concat(input.AsSpan(0, 1000), "...")
+                : input;
+
+            return new JObject
+            {
+                ["error"] = ex.Message,
+                ["error_type"] = ex.GetType().Name,
+                ["line"] = ex.LineNumber,
+                ["position"] = ex.LinePosition,
+                ["raw_snippet"] = snippet,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
+            };
         }
     }
 }

@@ -14,19 +14,14 @@ namespace FormatConverter.Xml
             {
                 return Config.IgnoreErrors
                     ? new JObject()
-                    : throw new ArgumentException("XML input cannot be null or empty");
+                    : throw new ArgumentException("XML input cannot be null or empty", nameof(input));
             }
 
             var settings = CreateXmlReaderSettings();
 
             try
             {
-                var token = ParseXmlDocument(input, settings);
-
-                if (Config.SortKeys)
-                    token = SortKeysRecursively(token);
-
-                return token;
+                return ParseXmlDocument(input, settings);
             }
             catch (XmlException ex)
             {
@@ -34,7 +29,7 @@ namespace FormatConverter.Xml
             }
         }
 
-        public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken)
+        public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(path))
                 throw new ArgumentException("Path cannot be null or empty.", nameof(path));
@@ -47,55 +42,40 @@ namespace FormatConverter.Xml
 
         private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
         {
-            FileStream? fileStream = null;
-            StreamReader? streamReader = null;
-            XmlReader? xmlReader = null;
+            using var fileStream = File.OpenRead(path);
+            using var streamReader = new StreamReader(fileStream, Config.Encoding ?? Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            using var xmlReader = XmlReader.Create(streamReader, CreateXmlReaderSettings());
 
-            try
+            var fileSize = fileStream.Length;
+            var showProgress = fileSize > 10_485_760;
+            var elementsProcessed = 0;
+
+            while (xmlReader.Read())
             {
-                var settings = CreateXmlReaderSettings();
+                cancellationToken.ThrowIfCancellationRequested();
 
-                fileStream = File.OpenRead(path);
-                streamReader = new StreamReader(fileStream, Config.Encoding ?? Encoding.UTF8, true);
-                xmlReader = XmlReader.Create(streamReader, settings);
-
-                var fileSize = fileStream.Length;
-                var showProgress = fileSize > 10_485_760;
-                var elementsProcessed = 0;
-
-                while (xmlReader.Read())
+                if (xmlReader.NodeType == XmlNodeType.Element && !xmlReader.IsEmptyElement)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    var token = ReadXmlElement(xmlReader, path);
 
-                    if (xmlReader.NodeType == XmlNodeType.Element && !xmlReader.IsEmptyElement)
+                    if (token != null)
                     {
-                        var token = ReadXmlElement(xmlReader, path);
+                        elementsProcessed++;
 
-                        if (token != null)
+                        if (showProgress && elementsProcessed % 100 == 0)
                         {
-                            elementsProcessed++;
-
-                            if (showProgress && elementsProcessed % 100 == 0)
-                            {
-                                var progress = (double)fileStream.Position / fileSize * 100;
-                                Console.Error.Write($"\rProcessing: {progress:F1}% ({elementsProcessed} elements)");
-                            }
-
-                            yield return token;
+                            var progress = (double)fileStream.Position / fileSize * 100;
+                            Console.Error.Write($"\rProcessing: {progress:F1}% ({elementsProcessed} elements)");
                         }
+
+                        yield return token;
                     }
                 }
-
-                if (showProgress)
-                {
-                    Console.Error.WriteLine($"\rCompleted: {elementsProcessed} elements processed");
-                }
             }
-            finally
+
+            if (showProgress)
             {
-                xmlReader?.Close();
-                streamReader?.Dispose();
-                fileStream?.Dispose();
+                Console.Error.WriteLine($"\rCompleted: {elementsProcessed} elements processed");
             }
         }
 
@@ -105,47 +85,33 @@ namespace FormatConverter.Xml
             {
                 if (XElement.ReadFrom(xmlReader) is XElement element)
                 {
-                    var token = ConvertXElementToJToken(element);
-
-                    if (Config.SortKeys)
-                        token = SortKeysRecursively(token);
-
-                    return token;
+                    return ConvertXElementToJToken(element);
                 }
                 return null;
             }
             catch (XmlException ex)
             {
-                var errorLocation = $"{path}";
-                if (ex.LineNumber > 0)
-                    errorLocation += $" at line {ex.LineNumber}, column {ex.LinePosition}";
-
                 if (Config.IgnoreErrors)
                 {
-                    Console.Error.WriteLine($"Warning: XML error ignored in {errorLocation}: {ex.Message}");
-                    return new JObject
-                    {
-                        ["error"] = ex.Message,
-                        ["location"] = errorLocation
-                    };
+                    Console.Error.WriteLine($"Warning: XML error at line {ex.LineNumber}, " +
+                                          $"position {ex.LinePosition}: {ex.Message}");
+                    return CreateErrorToken(ex, xmlReader as IXmlLineInfo);
                 }
 
-                throw new FormatException($"Invalid XML in {errorLocation}: {ex.Message}", ex);
+                throw new FormatException(
+                    $"Invalid XML at line {ex.LineNumber}, position {ex.LinePosition}: {ex.Message}",
+                    ex);
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: Unexpected error ignored in {path}: {ex.Message}");
-                return new JObject
-                {
-                    ["error"] = ex.Message,
-                    ["source"] = path
-                };
+                Console.Error.WriteLine($"Warning: Unexpected error in {path}: {ex.Message}");
+                return CreateErrorToken(ex, path);
             }
         }
 
         private XmlReaderSettings CreateXmlReaderSettings()
         {
-            return new XmlReaderSettings
+            var settings = new XmlReaderSettings
             {
                 IgnoreWhitespace = !Config.PrettyPrint,
                 IgnoreComments = Config.NoMetadata,
@@ -153,13 +119,25 @@ namespace FormatConverter.Xml
                 DtdProcessing = Config.StrictMode ? DtdProcessing.Parse : DtdProcessing.Ignore,
                 ValidationFlags = Config.StrictMode
                     ? System.Xml.Schema.XmlSchemaValidationFlags.ReportValidationWarnings
-                    : System.Xml.Schema.XmlSchemaValidationFlags.None
+                    : System.Xml.Schema.XmlSchemaValidationFlags.None,
+                MaxCharactersInDocument = 0
             };
+
+            if (Config.MaxDepth.HasValue)
+            {
+                settings.MaxCharactersInDocument = Config.MaxDepth.Value * 1000;
+            }
+
+            return settings;
         }
 
         private JToken ParseXmlDocument(string input, XmlReaderSettings settings)
         {
-            var doc = XDocument.Parse(input, LoadOptions.PreserveWhitespace);
+            var loadOptions = Config.PrettyPrint
+                ? LoadOptions.PreserveWhitespace
+                : LoadOptions.None;
+
+            var doc = XDocument.Parse(input, loadOptions);
 
             if (doc.Root == null)
             {
@@ -173,79 +151,92 @@ namespace FormatConverter.Xml
         {
             if (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: XML parsing error ignored: {ex.Message}");
-                return new JObject
-                {
-                    ["error"] = ex.Message,
-                    ["raw"] = input.Length > 1000
-                        ? string.Concat(input.AsSpan(0, 1000), "...")
-                        : input
-                };
+                Console.Error.WriteLine($"Warning: XML parsing error: {ex.Message}");
+                return CreateErrorToken(ex, input);
             }
+
             throw new FormatException($"Invalid XML: {ex.Message}", ex);
         }
 
-        private JToken ConvertXElementToJToken(XElement element)
+        private JObject ConvertXElementToJToken(XElement element)
         {
-            var result = new JObject();
+            var obj = new JObject();
 
-            if (element.HasAttributes)
+            foreach (var attr in element.Attributes().Where(a => !a.IsNamespaceDeclaration))
             {
-                foreach (var attr in element.Attributes().Where(a => !a.IsNamespaceDeclaration))
-                {
-                    var key = Config.XmlUseAttributes ? $"@{attr.Name.LocalName}" : attr.Name.LocalName;
-                    result[key] = new JValue(ConvertValue(attr.Value));
-                }
+                obj[$"@{attr.Name.LocalName}"] = attr.Value;
             }
 
             var childElements = element.Elements().ToList();
-            var childGroups = childElements.GroupBy(e => e.Name.LocalName);
 
-            foreach (var group in childGroups)
+            if (childElements.Count > 0)
             {
-                var children = group.ToList();
-                result[group.Key] = CreateGroupToken(children);
+                var grouped = childElements.GroupBy(e => e.Name.LocalName);
+
+                foreach (var group in grouped)
+                {
+                    if (group.Count() == 1)
+                    {
+                        obj[group.Key] = ConvertXElementToJToken(group.First());
+                    }
+                    else
+                    {
+                        var array = new JArray(group.Select(ConvertXElementToJToken));
+                        obj[group.Key] = array;
+                    }
+                }
             }
 
-            if (!element.HasElements && !element.HasAttributes && !string.IsNullOrWhiteSpace(element.Value))
+            if (childElements.Count == 0)
             {
-                return new JValue(ConvertValue(element.Value));
+                var text = element.Value?.Trim();
+                if (!string.IsNullOrEmpty(text))
+                {
+                    obj["#text"] = text;
+                }
             }
 
-            if (!element.HasElements && element.HasAttributes && !string.IsNullOrWhiteSpace(element.Value))
-            {
-                result["#text"] = new JValue(ConvertValue(element.Value));
-            }
-
-            return result.Count == 1 && result["#text"] != null ? result["#text"]! : result;
+            return obj;
         }
 
-        private JToken CreateGroupToken(List<XElement> children)
+        private static JObject CreateErrorToken(XmlException ex, IXmlLineInfo? lineInfo)
         {
-            if (children.Count == 1)
+            return new JObject
             {
-                var child = children.First();
-                return child.HasElements || child.HasAttributes
-                    ? ConvertXElementToJToken(child)
-                    : new JValue(ConvertValue(child.Value));
-            }
-
-            var array = new JArray();
-            foreach (var child in children)
-            {
-                array.Add(ConvertXElementToJToken(child));
-            }
-            return array;
+                ["error"] = ex.Message,
+                ["error_type"] = ex.GetType().Name,
+                ["line"] = lineInfo?.LineNumber ?? ex.LineNumber,
+                ["position"] = lineInfo?.LinePosition ?? ex.LinePosition,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
+            };
         }
 
-        private static object ConvertValue(string value)
+        private static JObject CreateErrorToken(XmlException ex, string input)
         {
-            if (bool.TryParse(value, out bool boolVal)) return boolVal;
-            if (int.TryParse(value, out int intVal)) return intVal;
-            if (double.TryParse(value, out double doubleVal)) return doubleVal;
-            if (DateTime.TryParse(value, out DateTime dateVal)) return dateVal;
+            var snippet = input.Length > 1000
+                ? string.Concat(input.AsSpan(0, 1000), "...")
+                : input;
 
-            return value;
+            return new JObject
+            {
+                ["error"] = ex.Message,
+                ["error_type"] = ex.GetType().Name,
+                ["line"] = ex.LineNumber,
+                ["position"] = ex.LinePosition,
+                ["raw_snippet"] = snippet,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
+            };
+        }
+
+        private static JObject CreateErrorToken(Exception ex, string path)
+        {
+            return new JObject
+            {
+                ["error"] = ex.Message,
+                ["error_type"] = ex.GetType().Name,
+                ["source"] = path,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
+            };
         }
     }
 }

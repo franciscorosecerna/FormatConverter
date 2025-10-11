@@ -82,5 +82,115 @@ namespace FormatConverter.Interfaces
 
             return flattened;
         }
+
+        protected string FormatNumber(double number)
+        {
+            return Config.NumberFormat?.ToLower() switch
+            {
+                "hexadecimal" => $"0x{(long)number:X}",
+                "scientific" => number.ToString("E"),
+                _ => number.ToString()
+            };
+        }
+
+        protected string FormatValue(object value)
+        {
+            if (value == null) return string.Empty;
+
+            return value switch
+            {
+                DateTime dt => FormatDateTime(dt),
+                double d when !string.IsNullOrEmpty(Config.NumberFormat) => FormatNumber(d),
+                float f when !string.IsNullOrEmpty(Config.NumberFormat) => FormatNumber(f),
+                decimal m when !string.IsNullOrEmpty(Config.NumberFormat) => FormatNumber((double)m),
+                _ => value.ToString() ?? string.Empty
+            };
+        }
+
+        protected string FormatDateTime(DateTime dateTime)
+        {
+            if (!string.IsNullOrEmpty(Config.DateFormat))
+            {
+                return Config.DateFormat.ToLower() switch
+                {
+                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    _ => dateTime.ToString(Config.DateFormat)
+                };
+            }
+            return dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fff");
+        }
+
+        protected static JToken LimitDepth(JToken token, int maxDepth, int currentDepth = 0)
+        {
+            if (currentDepth >= maxDepth)
+            {
+                return token.Type switch
+                {
+                    JTokenType.Object => new JObject(),
+                    JTokenType.Array => new JArray(),
+                    _ => token
+                };
+            }
+
+            return token.Type switch
+            {
+                JTokenType.Object => new JObject(
+                    ((JObject)token).Properties()
+                        .Select(p => new JProperty(p.Name, LimitDepth(p.Value, maxDepth, currentDepth + 1)))
+                ),
+                JTokenType.Array => new JArray(
+                    ((JArray)token).Select(item => LimitDepth(item, maxDepth, currentDepth + 1))
+                ),
+                _ => token
+            };
+        }
+
+        protected JToken RemoveMetadata(JToken token)
+        {
+            if (token.Type == JTokenType.Object)
+            {
+                var obj = (JObject)token;
+                var metadataKeys = new[] { "$schema", "$id", "$comment", "$ref", "_metadata", "__meta__", "__type" };
+                var cleaned = new JObject();
+
+                foreach (var prop in obj.Properties())
+                {
+                    if (!metadataKeys.Contains(prop.Name))
+                    {
+                        cleaned[prop.Name] = RemoveMetadata(prop.Value);
+                    }
+                }
+
+                return cleaned;
+            }
+            else if (token.Type == JTokenType.Array)
+            {
+                return new JArray(((JArray)token).Select(RemoveMetadata));
+            }
+
+            return token;
+        }
+
+        protected virtual JToken PreprocessToken(JToken data)
+        {
+            var result = data;
+
+            if (Config.FlattenArrays)
+                result = FlattenArraysRecursively(result);
+
+            if (Config.SortKeys)
+                result = SortKeysRecursively(result);
+
+            if (Config.ArrayWrap && result.Type != JTokenType.Array)
+                result = new JArray(result);
+
+            if (Config.NoMetadata)
+                result = RemoveMetadata(result);
+
+            if (Config.MaxDepth.HasValue)
+                result = LimitDepth(result, Config.MaxDepth.Value);
+
+            return result;
+        }
     }
 }

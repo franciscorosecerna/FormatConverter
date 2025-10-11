@@ -2,7 +2,6 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Converters;
-using System.Text;
 
 namespace FormatConverter.Json
 {
@@ -13,10 +12,17 @@ namespace FormatConverter.Json
             if (data == null)
                 throw new ArgumentNullException(nameof(data));
 
-            var processed = ProcessDataBeforeSerialization(data);
+            var processed = PreprocessToken(data);
             var settings = CreateJsonSerializerSettings();
 
-            return SerializeToken(processed, JsonSerializer.Create(settings));
+            var result = SerializeToken(processed, JsonSerializer.Create(settings));
+
+            if (Config.StrictMode)
+            {
+                ValidateJson(result);
+            }
+
+            return result;
         }
 
         public override void SerializeStream(IEnumerable<JToken> data, Stream output, CancellationToken cancellationToken = default)
@@ -28,7 +34,6 @@ namespace FormatConverter.Json
 
             var settings = CreateJsonSerializerSettings();
             var serializer = JsonSerializer.Create(settings);
-            var needsPretty = NeedsPretty();
             var chunkSize = GetChunkSize();
 
             using var writer = new StreamWriter(output, Config.Encoding, 8192, leaveOpen: true);
@@ -44,7 +49,7 @@ namespace FormatConverter.Json
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var processed = ProcessDataBeforeSerialization(token);
+                var processed = PreprocessToken(token);
                 buffer.Add(processed);
 
                 if (buffer.Count >= chunkSize)
@@ -82,9 +87,6 @@ namespace FormatConverter.Json
             {
                 ct.ThrowIfCancellationRequested();
 
-                if (jsonWriter.WriteState == WriteState.Array && i > 0)
-                    jsonWriter.WriteRaw(",");
-
                 try
                 {
                     serializer.Serialize(jsonWriter, items[i]);
@@ -94,8 +96,9 @@ namespace FormatConverter.Json
                     var errorObj = new JObject
                     {
                         ["error"] = ex.Message,
+                        ["error_type"] = ex.GetType().Name,
                         ["original_type"] = items[i].Type.ToString(),
-                        ["timestamp"] = DateTime.UtcNow
+                        ["timestamp"] = DateTime.UtcNow.ToString("o")
                     };
                     serializer.Serialize(jsonWriter, errorObj);
                 }
@@ -118,81 +121,17 @@ namespace FormatConverter.Json
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
-                return CreateErrorJson(ex.Message, token);
+                return CreateErrorJson(ex.Message, ex.GetType().Name, token);
             }
         }
 
-        private JToken ProcessDataBeforeSerialization(JToken data)
+        private void ValidateJson(string json)
         {
-            var result = data;
-
-            if (Config.FlattenArrays)
-                result = FlattenArraysRecursively(result);
-
-            if (Config.SortKeys)
-                result = SortKeysRecursively(result);
-
-            if (Config.ArrayWrap && result.Type != JTokenType.Array)
-                result = new JArray(result);
-
-            if (Config.NoMetadata)
-                result = RemoveMetadata(result);
-
-            if (Config.MaxDepth.HasValue)
-                result = LimitDepth(result, Config.MaxDepth.Value);
-
-            return result;
-        }
-
-        private JToken RemoveMetadata(JToken token)
-        {
-            if (token.Type == JTokenType.Object)
+            try
             {
-                var obj = (JObject)token;
-                var metadataKeys = new[] { "$schema", "$id", "$comment", "$ref", "_metadata", "__meta__", "__type" };
-                var cleaned = new JObject();
-
-                foreach (var prop in obj.Properties())
-                {
-                    if (!metadataKeys.Contains(prop.Name))
-                    {
-                        cleaned[prop.Name] = RemoveMetadata(prop.Value);
-                    }
-                }
-
-                return cleaned;
+                JToken.Parse(json);
             }
-            else if (token.Type == JTokenType.Array)
-            {
-                return new JArray(((JArray)token).Select(RemoveMetadata));
-            }
-
-            return token;
-        }
-
-        private static JToken LimitDepth(JToken token, int maxDepth, int currentDepth = 0)
-        {
-            if (currentDepth >= maxDepth)
-            {
-                return token.Type switch
-                {
-                    JTokenType.Object => new JObject(),
-                    JTokenType.Array => new JArray(),
-                    _ => token
-                };
-            }
-
-            return token.Type switch
-            {
-                JTokenType.Object => new JObject(
-                    ((JObject)token).Properties()
-                        .Select(p => new JProperty(p.Name, LimitDepth(p.Value, maxDepth, currentDepth + 1)))
-                ),
-                JTokenType.Array => new JArray(
-                    ((JArray)token).Select(item => LimitDepth(item, maxDepth, currentDepth + 1))
-                ),
-                _ => token
-            };
+            catch when (!Config.StrictMode) { }
         }
 
         private bool NeedsPretty() => !Config.Minify && Config.PrettyPrint;
@@ -275,13 +214,14 @@ namespace FormatConverter.Json
             }
         }
 
-        private string CreateErrorJson(string errorMessage, JToken originalToken)
+        private string CreateErrorJson(string errorMessage, string errorType, JToken originalToken)
         {
             var errorObj = new JObject
             {
                 ["error"] = errorMessage,
+                ["error_type"] = errorType,
                 ["original_type"] = originalToken.Type.ToString(),
-                ["timestamp"] = DateTime.UtcNow
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
             };
 
             return Config.Minify
