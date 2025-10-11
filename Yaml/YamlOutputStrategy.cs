@@ -10,341 +10,137 @@ namespace FormatConverter.Yaml
     {
         public override string Serialize(JToken data)
         {
-            if (Config.UseStreaming)
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+
+            var processed = PreprocessToken(data);
+            var result = SerializeToken(processed);
+
+            if (Config.StrictMode)
             {
-                return string.Join("", SerializeStream([data]));
+                ValidateYaml(result);
             }
 
-            return SerializeRegular(data);
+            return result;
         }
 
-        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
+        public override void SerializeStream(IEnumerable<JToken> data, Stream output, CancellationToken cancellationToken = default)
         {
-            if (!Config.UseStreaming)
-            {
-                yield return Serialize(new JArray(data));
-                yield break;
-            }
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+            if (output == null)
+                throw new ArgumentNullException(nameof(output));
+
+            var serializer = CreateYamlSerializer();
+            var chunkSize = GetChunkSize();
+
+            using var writer = new StreamWriter(output, Config.Encoding, 8192, leaveOpen: true);
+
+            var buffer = new List<JToken>();
+            bool isFirstDocument = true;
 
             foreach (var token in data)
             {
-                foreach (var chunk in StreamToken(token))
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var processed = PreprocessToken(token);
+                buffer.Add(processed);
+
+                if (buffer.Count >= chunkSize)
                 {
-                    yield return chunk;
-                }
-            }
-        }
-
-        private IEnumerable<string> StreamToken(JToken token)
-        {
-            var processed = ProcessDataBeforeSerialization(token);
-
-            return processed.Type switch
-            {
-                JTokenType.Array => StreamArray((JArray)processed),
-                JTokenType.Object => StreamObject((JObject)processed),
-                _ => StreamSingle(processed)
-            };
-        }
-
-        private IEnumerable<string> StreamArray(JArray array)
-        {
-            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
-
-            if (Config.YamlExplicitStart)
-            {
-                yield return "---\n";
-            }
-
-            bool first = true;
-            var buffer = new List<JToken>();
-            var currentBufferSize = 0;
-            var totalProcessed = 0;
-            var itemCount = array.Count;
-
-            foreach (var item in array)
-            {
-                var obj = ConvertJTokenToObject(item);
-                var serializedItem = SerializeYamlItem(obj);
-                var itemSizeInBytes = Encoding.UTF8.GetByteCount(serializedItem);
-
-                if (buffer.Count > 0 && currentBufferSize + itemSizeInBytes > bufferSize)
-                {
-                    yield return SerializeYamlChunk(buffer, ref first);
+                    WriteChunkToStream(buffer, serializer, writer, ref isFirstDocument, cancellationToken);
                     buffer.Clear();
-                    currentBufferSize = 0;
-
-                    if (itemCount > 0 && totalProcessed % Math.Max(1, itemCount / 10) == 0)
-                    {
-                        var progress = (double)totalProcessed / itemCount * 100;
-                        Console.WriteLine($"Serialization progress: {progress:F1}%");
-                    }
                 }
-
-                buffer.Add(item);
-                currentBufferSize += itemSizeInBytes;
-                totalProcessed++;
             }
 
             if (buffer.Count > 0)
             {
-                yield return SerializeYamlChunk(buffer, ref first);
+                cancellationToken.ThrowIfCancellationRequested();
+                WriteChunkToStream(buffer, serializer, writer, ref isFirstDocument, cancellationToken);
             }
 
-            if (Config.YamlExplicitEnd)
-            {
-                yield return "\n...";
-            }
+            writer.Flush();
         }
 
-        private IEnumerable<string> StreamObject(JObject obj)
+        public void SerializeStream(IEnumerable<JToken> data, string outputPath, CancellationToken cancellationToken = default)
         {
-            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
+            if (string.IsNullOrEmpty(outputPath))
+                throw new ArgumentNullException(nameof(outputPath));
 
-            if (Config.YamlExplicitStart)
-            {
-                yield return "---\n";
-            }
-
-            var properties = Config.SortKeys
-                ? obj.Properties().OrderBy(p => p.Name)
-                : obj.Properties();
-
-            bool first = true;
-            var buffer = new List<JProperty>();
-            var currentBufferSize = 0;
-            var totalProcessed = 0;
-            var itemCount = obj.Count;
-
-            foreach (var property in properties)
-            {
-                var serializedItem = SerializeYamlProperty(property);
-                var itemSizeInBytes = Encoding.UTF8.GetByteCount(serializedItem);
-
-                if (buffer.Count > 0 && currentBufferSize + itemSizeInBytes > bufferSize)
-                {
-                    yield return SerializeYamlPropertyChunk(buffer, ref first);
-                    buffer.Clear();
-                    currentBufferSize = 0;
-
-                    if (itemCount > 0 && totalProcessed % Math.Max(1, itemCount / 10) == 0)
-                    {
-                        var progress = (double)totalProcessed / itemCount * 100;
-                        Console.WriteLine($"Serialization progress: {progress:F1}%");
-                    }
-                }
-
-                buffer.Add(property);
-                currentBufferSize += itemSizeInBytes;
-                totalProcessed++;
-            }
-
-            if (buffer.Count > 0)
-            {
-                yield return SerializeYamlPropertyChunk(buffer, ref first);
-            }
-
-            if (Config.YamlExplicitEnd)
-            {
-                yield return "\n...";
-            }
+            using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192);
+            SerializeStream(data, fileStream, cancellationToken);
         }
 
-        private string SerializeYamlChunk(List<JToken> items, ref bool first)
+        private void WriteChunkToStream(List<JToken> items, ISerializer serializer, StreamWriter writer, ref bool isFirstDocument, CancellationToken ct)
         {
-            var sb = new StringBuilder();
-            var indent = NeedsPretty() ? new string(' ', Config.IndentSize ?? 2) : "";
+            if (items.Count == 0) return;
 
-            foreach (var item in items)
+            for (int i = 0; i < items.Count; i++)
             {
+                ct.ThrowIfCancellationRequested();
+
                 try
                 {
-                    var obj = ConvertJTokenToObject(item);
-                    var serialized = SerializeYamlItem(obj);
-
-                    if (NeedsPretty())
+                    if (!isFirstDocument || Config.YamlExplicitStart)
                     {
-                        sb.Append("- ");
-                        var lines = serialized.Split('\n');
-                        sb.AppendLine(lines[0]);
-                        for (int i = 1; i < lines.Length; i++)
-                        {
-                            if (!string.IsNullOrWhiteSpace(lines[i]))
-                            {
-                                sb.Append(indent).AppendLine(lines[i]);
-                            }
-                        }
+                        writer.WriteLine("---");
+                    }
+                    isFirstDocument = false;
+
+                    var obj = ConvertJTokenToObject(items[i]);
+                    var yamlContent = serializer.Serialize(obj);
+
+                    writer.Write(yamlContent.TrimEnd());
+
+                    if (Config.YamlExplicitEnd)
+                    {
+                        writer.WriteLine();
+                        writer.WriteLine("...");
                     }
                     else
                     {
-                        sb.Append("- ").AppendLine(serialized.Replace("\n", " "));
+                        writer.WriteLine();
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (Config.IgnoreErrors)
                 {
-                    if (Config.IgnoreErrors)
-                    {
-                        sb.AppendLine(CreateErrorYaml(ex.Message));
-                    }
-                    else
-                    {
-                        throw new FormatException($"Error serializing YAML item: {ex.Message}", ex);
-                    }
+                    var errorYaml = CreateErrorYaml(ex.Message, ex.GetType().Name, items[i]);
+                    writer.WriteLine(errorYaml);
                 }
             }
 
-            first = false;
-            return sb.ToString();
+            writer.Flush();
         }
 
-        private string SerializeYamlPropertyChunk(List<JProperty> properties, ref bool first)
-        {
-            var sb = new StringBuilder();
-
-            foreach (var property in properties)
-            {
-                try
-                {
-                    var serialized = SerializeYamlProperty(property);
-                    sb.AppendLine(serialized);
-                }
-                catch (Exception ex)
-                {
-                    if (Config.IgnoreErrors)
-                    {
-                        sb.AppendLine(CreateErrorYaml(ex.Message));
-                    }
-                    else
-                    {
-                        throw new FormatException($"Error serializing YAML property: {ex.Message}", ex);
-                    }
-                }
-            }
-
-            first = false;
-            return sb.ToString();
-        }
-
-        private IEnumerable<string> StreamSingle(JToken token)
-        {
-            IEnumerable<string> Iterator()
-            {
-                if (Config.YamlExplicitStart)
-                {
-                    yield return "---\n";
-                }
-
-                var obj = ConvertJTokenToObject(token);
-                var serialized = SerializeYamlItem(obj);
-                yield return serialized;
-
-                if (Config.YamlExplicitEnd)
-                {
-                    yield return "\n...";
-                }
-            }
-
-            try
-            {
-                return Iterator();
-            }
-            catch (Exception ex)
-            {
-                if (Config.IgnoreErrors)
-                {
-                    return [CreateErrorYaml(ex.Message)];
-                }
-                else
-                {
-                    throw new FormatException($"Error serializing single YAML token: {ex.Message}", ex);
-                }
-            }
-        }
-
-        private string SerializeRegular(JToken data)
+        private string SerializeToken(JToken token)
         {
             try
             {
-                var processed = ProcessDataBeforeSerialization(data);
-                var obj = ConvertJTokenToObject(processed)
-                    ?? throw new FormatException("Failed to convert JSON to object for YAML serialization");
-
                 var serializer = CreateYamlSerializer();
+                var obj = ConvertJTokenToObject(token);
                 var yamlContent = serializer.Serialize(obj);
 
                 yamlContent = ApplyYamlFormatting(yamlContent);
 
                 return yamlContent;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (Config.IgnoreErrors)
             {
-                if (Config.IgnoreErrors)
-                {
-                    return CreateErrorYaml(ex.Message);
-                }
-                throw new FormatException($"YAML serialization failed: {ex.Message}", ex);
+                return CreateErrorYaml(ex.Message, ex.GetType().Name, token);
             }
         }
 
-        private string SerializeYamlItem(object? obj)
+        private void ValidateYaml(string yaml)
         {
-            var serializer = CreateYamlSerializer();
-            var yamlContent = serializer.Serialize(obj);
-
-            if (Config.Minify)
+            try
             {
-                yamlContent = MinifyYaml(yamlContent);
+                var deserializer = new DeserializerBuilder().Build();
+                deserializer.Deserialize(new StringReader(yaml));
             }
-
-            return yamlContent;
+            catch when (!Config.StrictMode) { }
         }
 
-        private string SerializeYamlProperty(JProperty property)
-        {
-            var obj = ConvertJTokenToObject(property.Value);
-            var serializer = CreateYamlSerializer();
-            var valueYaml = serializer.Serialize(obj);
-
-            if (valueYaml.Contains('\n'))
-            {
-                return $"{property.Name}:\n{IndentYaml(valueYaml)}";
-            }
-
-            return $"{property.Name}: {valueYaml}";
-        }
-
-        private JToken ProcessDataBeforeSerialization(JToken data)
-        {
-            if (Config.SortKeys)
-                data = SortKeysRecursively(data);
-
-            if (Config.ArrayWrap && data.Type != JTokenType.Array)
-                return new JArray(data);
-
-            return data;
-        }
-
-        private bool NeedsPretty() => !Config.Minify && Config.PrettyPrint;
-
-        private JToken SortKeysRecursively(JToken token)
-        {
-            return token.Type switch
-            {
-                JTokenType.Object => SortJObject((JObject)token),
-                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
-                _ => token
-            };
-        }
-
-        private JObject SortJObject(JObject obj)
-        {
-            var sorted = new JObject();
-            foreach (var property in obj.Properties().OrderBy(p => p.Name))
-            {
-                sorted[property.Name] = SortKeysRecursively(property.Value);
-            }
-            return sorted;
-        }
+        private int GetChunkSize() => Config.ChunkSize > 0 ? Config.ChunkSize : 100;
 
         private ISerializer CreateYamlSerializer()
         {
@@ -382,14 +178,11 @@ namespace FormatConverter.Yaml
 
         private string ApplyYamlFormatting(string yamlContent)
         {
-            if (Config.YamlExplicitStart && !yamlContent.StartsWith("---"))
-            {
-                yamlContent = "---\n" + yamlContent;
-            }
+            var sb = new StringBuilder();
 
-            if (Config.YamlExplicitEnd && !yamlContent.EndsWith("..."))
+            if (Config.YamlExplicitStart)
             {
-                yamlContent = yamlContent.TrimEnd() + "\n...";
+                sb.AppendLine("---");
             }
 
             if (Config.Minify)
@@ -397,11 +190,29 @@ namespace FormatConverter.Yaml
                 yamlContent = MinifyYaml(yamlContent);
             }
 
-            return yamlContent;
+            sb.Append(yamlContent.TrimEnd());
+
+            if (Config.YamlExplicitEnd)
+            {
+                sb.AppendLine();
+                sb.Append("...");
+            }
+
+            return sb.ToString();
         }
 
-        private object? ConvertJTokenToObject(JToken token)
+        private object? ConvertJTokenToObject(JToken token, int currentDepth = 0)
         {
+            if (Config.MaxDepth.HasValue && currentDepth > Config.MaxDepth.Value)
+            {
+                if (Config.IgnoreErrors)
+                {
+                    Console.Error.WriteLine($"Warning: Maximum depth {Config.MaxDepth.Value} exceeded during serialization");
+                    return $"[Max depth exceeded at level {currentDepth}]";
+                }
+                throw new FormatException($"Maximum depth of {Config.MaxDepth.Value} exceeded during serialization");
+            }
+
             switch (token.Type)
             {
                 case JTokenType.Object:
@@ -414,7 +225,7 @@ namespace FormatConverter.Yaml
 
                     foreach (var property in properties)
                     {
-                        dict[property.Name] = ConvertJTokenToObject(property.Value);
+                        dict[property.Name] = ConvertJTokenToObject(property.Value, currentDepth + 1);
                     }
                     return dict;
 
@@ -422,18 +233,18 @@ namespace FormatConverter.Yaml
                     var list = new List<object?>();
                     foreach (var item in token.Children())
                     {
-                        list.Add(ConvertJTokenToObject(item));
+                        list.Add(ConvertJTokenToObject(item, currentDepth + 1));
                     }
                     return list;
 
                 case JTokenType.String:
-                    return FormatStringValue(token.Value<string>());
+                    return token.Value<string>() ?? string.Empty;
 
                 case JTokenType.Integer:
                     return token.Value<long>();
 
                 case JTokenType.Float:
-                    return FormatNumberValue(token.Value<double>());
+                    return FormatNumber(token.Value<double>());
 
                 case JTokenType.Boolean:
                     return token.Value<bool>();
@@ -442,40 +253,11 @@ namespace FormatConverter.Yaml
                     return null;
 
                 case JTokenType.Date:
-                    return FormatDateTimeValue(token.Value<DateTime>());
+                    return FormatDateTime(token.Value<DateTime>());
 
                 default:
                     return token.ToString();
             }
-        }
-
-        private static string FormatStringValue(string? value) => value ?? string.Empty;
-
-        private object FormatNumberValue(double number)
-        {
-            if (!string.IsNullOrEmpty(Config.NumberFormat))
-            {
-                return Config.NumberFormat.ToLower() switch
-                {
-                    "hexadecimal" => $"0x{(long)number:X}",
-                    "scientific" => number.ToString("E"),
-                    _ => number
-                };
-            }
-            return number;
-        }
-
-        private string FormatDateTimeValue(DateTime dateTime)
-        {
-            if (!string.IsNullOrEmpty(Config.DateFormat))
-            {
-                return Config.DateFormat.ToLower() switch
-                {
-                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                    _ => dateTime.ToString(Config.DateFormat)
-                };
-            }
-            return dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fff");
         }
 
         private static string MinifyYaml(string yaml)
@@ -487,24 +269,22 @@ namespace FormatConverter.Yaml
             return string.Join("\n", lines);
         }
 
-        private static string IndentYaml(string yaml)
-        {
-            var lines = yaml.Split('\n');
-            var indent = "  ";
-            return string.Join("\n", lines.Select(line =>
-                string.IsNullOrWhiteSpace(line) ? line : indent + line));
-        }
-
-        private string CreateErrorYaml(string errorMessage)
+        private string CreateErrorYaml(string errorMessage, string errorType, JToken originalToken)
         {
             var errorDict = new Dictionary<string, object>
             {
                 ["error"] = errorMessage,
-                ["timestamp"] = DateTime.UtcNow.ToString("O")
+                ["error_type"] = errorType,
+                ["original_type"] = originalToken.Type.ToString(),
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
             };
 
             var serializer = CreateYamlSerializer();
-            return serializer.Serialize(errorDict);
+            var errorYaml = serializer.Serialize(errorDict);
+
+            return Config.Minify
+                ? MinifyYaml(errorYaml)
+                : errorYaml;
         }
     }
 }

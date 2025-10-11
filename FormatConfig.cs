@@ -29,6 +29,7 @@ namespace FormatConverter
 
         //yaml specific
         public bool YamlFlowStyle { get; set; }
+        public bool YamlAllowDuplicateKeys { get; set; }
         public bool YamlExplicitStart { get; set; }
         public bool YamlExplicitEnd { get; set; }
         public bool YamlQuoteStrings { get; set; }
@@ -99,6 +100,7 @@ namespace FormatConverter
                 YamlExplicitEnd = options.YamlExplicitEnd,
                 YamlQuoteStrings = options.YamlQuoteStrings,
                 YamlCanonical = options.YamlCanonical,
+                YamlAllowDuplicateKeys = options.YamlAllowDuplicateKeys,
 
                 //TOML
                 TomlArrayOfTables = options.TomlArrayOfTables,

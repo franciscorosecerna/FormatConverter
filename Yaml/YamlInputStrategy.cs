@@ -4,6 +4,7 @@ using System.Text;
 using YamlDotNet.Core;
 using YamlDotNet.Core.Events;
 using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
 
 namespace FormatConverter.Yaml
 {
@@ -23,10 +24,6 @@ namespace FormatConverter.Yaml
             try
             {
                 var token = ParseYamlDocument(input, deserializer);
-
-                if (Config.SortKeys)
-                    token = SortKeysRecursively(token);
-
                 return token;
             }
             catch (YamlException ex)
@@ -58,13 +55,13 @@ namespace FormatConverter.Yaml
             try
             {
                 fileStream = File.OpenRead(path);
-                streamReader = new StreamReader(fileStream, Config.Encoding, true);
+                streamReader = new StreamReader(fileStream, Config.Encoding, detectEncodingFromByteOrderMarks: true);
 
                 var fileSize = fileStream.Length;
                 var showProgress = fileSize > 10_485_760;
                 var documentsProcessed = 0;
 
-                var parser = new Parser(streamReader);
+                var parser = CreateParser(streamReader);
                 var deserializer = CreateDeserializer();
 
                 parser.Consume<StreamStart>();
@@ -103,7 +100,7 @@ namespace FormatConverter.Yaml
             }
         }
 
-        private JToken? ReadDocument(Parser parser, IDeserializer deserializer, string source)
+        private JToken? ReadDocument(IParser parser, IDeserializer deserializer, string source)
         {
             try
             {
@@ -124,9 +121,6 @@ namespace FormatConverter.Yaml
 
                 var token = ConvertObjectToJToken(yamlObject);
 
-                if (Config.SortKeys)
-                    token = SortKeysRecursively(token);
-
                 return token;
             }
             catch (YamlException ex)
@@ -138,11 +132,7 @@ namespace FormatConverter.Yaml
                 if (Config.IgnoreErrors)
                 {
                     Console.Error.WriteLine($"Warning: YAML error ignored in {errorLocation}: {ex.Message}");
-                    return new JObject
-                    {
-                        ["error"] = ex.Message,
-                        ["location"] = errorLocation
-                    };
+                    return CreateErrorToken(ex, errorLocation, (int)ex.Start.Line, (int)ex.Start.Column);
                 }
 
                 throw new FormatException($"Invalid YAML in {errorLocation}: {ex.Message}", ex);
@@ -150,12 +140,23 @@ namespace FormatConverter.Yaml
             catch (Exception ex) when (Config.IgnoreErrors)
             {
                 Console.Error.WriteLine($"Warning: Unexpected error ignored in {source}: {ex.Message}");
-                return new JObject
-                {
-                    ["error"] = ex.Message,
-                    ["source"] = source
-                };
+                return CreateErrorToken(ex, source, 0, 0);
             }
+        }
+
+        private IParser CreateParser(StreamReader streamReader)
+        {
+            var baseParser = new Parser(streamReader);
+
+            if (Config.MaxDepth.HasValue)
+            {
+                return new MaxDepthValidatingParser(
+                    baseParser,
+                    Config.MaxDepth.Value,
+                    Config.IgnoreErrors);
+            }
+
+            return baseParser;
         }
 
         private IDeserializer CreateDeserializer()
@@ -167,7 +168,7 @@ namespace FormatConverter.Yaml
                 deserializerBuilder.IgnoreUnmatchedProperties();
             }
 
-            if (Config.StrictMode)
+            if (Config.StrictMode || Config.YamlAllowDuplicateKeys == false)
             {
                 deserializerBuilder.WithDuplicateKeyChecking();
             }
@@ -188,27 +189,64 @@ namespace FormatConverter.Yaml
             if (Config.IgnoreErrors)
             {
                 Console.Error.WriteLine($"Warning: YAML parsing error ignored: {ex.Message}");
+
+                var snippet = input.Length > 1000
+                    ? string.Concat(input.AsSpan(0, 1000), "...")
+                    : input;
+
                 return new JObject
                 {
                     ["error"] = ex.Message,
-                    ["raw"] = input.Length > 1000
-                        ? string.Concat(input.AsSpan(0, 1000), "...")
-                        : input
+                    ["error_type"] = ex.GetType().Name,
+                    ["raw_snippet"] = snippet,
+                    ["timestamp"] = DateTime.UtcNow.ToString("o")
                 };
             }
 
             throw new FormatException($"Invalid YAML: {ex.Message}", ex);
         }
 
-        private JToken ConvertObjectToJToken(object obj)
+        private static JObject CreateErrorToken(Exception ex, string location, int line, int column)
         {
-            if (obj == null) return JValue.CreateNull();
+            var errorObj = new JObject
+            {
+                ["error"] = ex.Message,
+                ["error_type"] = ex.GetType().Name,
+                ["location"] = location,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
+            };
+
+            if (line > 0)
+            {
+                errorObj["line"] = line;
+                errorObj["column"] = column;
+            }
+
+            return errorObj;
+        }
+
+        private JToken ConvertObjectToJToken(object obj, int currentDepth = 0)
+        {
+            if (Config.MaxDepth.HasValue && currentDepth > Config.MaxDepth.Value)
+            {
+                if (Config.IgnoreErrors)
+                {
+                    Console.Error.WriteLine($"Warning: Maximum depth {Config.MaxDepth.Value} exceeded");
+                    return new JValue($"[Max depth exceeded at level {currentDepth}]");
+                }
+                throw new FormatException($"Maximum depth of {Config.MaxDepth.Value} exceeded");
+            }
+
+            if (obj == null)
+            {
+                return JValue.CreateNull();
+            }
 
             return obj switch
             {
-                Dictionary<object, object> dict => ConvertDictionaryToJObject(dict),
-                List<object> list => ConvertListToJArray(list),
-                Array array => ConvertArrayToJArray(array),
+                Dictionary<object, object> dict => ConvertDictionaryToJObject(dict, currentDepth),
+                List<object> list => ConvertListToJArray(list, currentDepth),
+                Array array => ConvertArrayToJArray(array, currentDepth),
                 string str => new JValue(str),
                 bool b => new JValue(b),
                 byte b => new JValue(b),
@@ -230,7 +268,7 @@ namespace FormatConverter.Yaml
             };
         }
 
-        private JObject ConvertDictionaryToJObject(Dictionary<object, object> dict)
+        private JObject ConvertDictionaryToJObject(Dictionary<object, object> dict, int currentDepth)
         {
             var result = new JObject();
             var nullKeyCounter = 0;
@@ -248,31 +286,31 @@ namespace FormatConverter.Yaml
                     nullKeyCounter++;
                 }
 
-                result[key] = ConvertObjectToJToken(kvp.Value);
+                result[key] = ConvertObjectToJToken(kvp.Value, currentDepth + 1);
             }
 
             return result;
         }
 
-        private JArray ConvertListToJArray(List<object> list)
+        private JArray ConvertListToJArray(List<object> list, int currentDepth)
         {
             var result = new JArray();
 
             foreach (var item in list)
             {
-                result.Add(ConvertObjectToJToken(item));
+                result.Add(ConvertObjectToJToken(item, currentDepth + 1));
             }
 
             return result;
         }
 
-        private JArray ConvertArrayToJArray(Array array)
+        private JArray ConvertArrayToJArray(Array array, int currentDepth)
         {
             var result = new JArray();
 
             foreach (var item in array)
             {
-                result.Add(ConvertObjectToJToken(item));
+                result.Add(ConvertObjectToJToken(item, currentDepth + 1));
             }
 
             return result;

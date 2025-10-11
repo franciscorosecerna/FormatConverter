@@ -83,7 +83,7 @@ namespace FormatConverter.Interfaces
             return flattened;
         }
 
-        protected string FormatNumber(double number)
+        protected virtual string FormatNumber(double number)
         {
             return Config.NumberFormat?.ToLower() switch
             {
@@ -93,7 +93,7 @@ namespace FormatConverter.Interfaces
             };
         }
 
-        protected string FormatValue(object value)
+        protected virtual string FormatValue(object value)
         {
             if (value == null) return string.Empty;
 
@@ -107,7 +107,7 @@ namespace FormatConverter.Interfaces
             };
         }
 
-        protected string FormatDateTime(DateTime dateTime)
+        protected virtual string FormatDateTime(DateTime dateTime)
         {
             if (!string.IsNullOrEmpty(Config.DateFormat))
             {

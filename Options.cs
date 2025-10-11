@@ -104,6 +104,9 @@ namespace FormatConverter
         [Option("yaml-canonical", HelpText = "Use canonical YAML format")]
         public bool YamlCanonical { get; set; }
 
+        [Option("yaml-allow-duplicate-keys", HelpText = "Allow duplicate keys in YAML")]
+        public bool YamlAllowDuplicateKeys { get; set; }
+
         #endregion
 
         #region TOML Options
