@@ -2,7 +2,6 @@
 using Newtonsoft.Json.Linq;
 using Tomlyn;
 using Tomlyn.Model;
-using Tomlyn.Syntax;
 
 namespace FormatConverter.Toml
 {
@@ -37,9 +36,6 @@ namespace FormatConverter.Toml
 
                 if (Config.NoMetadata)
                     RemoveMetadataProperties(token);
-
-                if (Config.SortKeys)
-                    token = SortKeysRecursively(token);
 
                 return token;
             }
@@ -78,7 +74,7 @@ namespace FormatConverter.Toml
                 }
 
                 var showProgress = fileSize > 10_485_760;
-                reader = new StreamReader(fileStream, Config.Encoding, true);
+                reader = new StreamReader(fileStream, Config.Encoding, detectEncodingFromByteOrderMarks: true);
                 var content = reader.ReadToEnd();
 
                 if (fileSize < 1_048_576)
@@ -97,7 +93,8 @@ namespace FormatConverter.Toml
 
                     if (showProgress && count % 10 == 0)
                     {
-                        Console.Error.Write($"\rProcessing: {count} tables");
+                        var progress = (double)fileStream.Position / fileSize * 100;
+                        Console.Error.Write($"\rProcessing: {progress:F1}% ({count} tables)");
                     }
 
                     yield return token;
@@ -140,6 +137,11 @@ namespace FormatConverter.Toml
                     var token = ConvertToJToken(value);
                     token = ApplyConfiguration(token);
 
+                    if (Config.MaxDepth > 0)
+                    {
+                        ValidateDepth(token, Config.MaxDepth.Value, key);
+                    }
+
                     yield return new JObject { [key] = token };
                 }
             }
@@ -147,6 +149,11 @@ namespace FormatConverter.Toml
             {
                 var token = ConvertToJToken(model);
                 token = ApplyConfiguration(token);
+
+                if (Config.MaxDepth > 0)
+                {
+                    ValidateDepth(token, Config.MaxDepth.Value, "root");
+                }
 
                 yield return token;
             }
@@ -156,9 +163,6 @@ namespace FormatConverter.Toml
         {
             if (Config.NoMetadata)
                 RemoveMetadataProperties(token);
-
-            if (Config.SortKeys)
-                token = SortKeysRecursively(token);
 
             return token;
         }
@@ -204,21 +208,55 @@ namespace FormatConverter.Toml
             return arr;
         }
 
+        private void ValidateDepth(JToken token, int maxDepth, string path, int currentDepth = 0)
+        {
+            if (currentDepth > maxDepth)
+            {
+                if (Config.IgnoreErrors)
+                {
+                    Console.Error.WriteLine($"Warning: Maximum depth ({maxDepth}) exceeded at path '{path}'");
+                    return;
+                }
+                throw new FormatException($"Maximum nesting depth ({maxDepth}) exceeded at path '{path}'");
+            }
+
+            if (token is JObject obj)
+            {
+                foreach (var prop in obj.Properties())
+                {
+                    ValidateDepth(prop.Value, maxDepth, $"{path}.{prop.Name}", currentDepth + 1);
+                }
+            }
+            else if (token is JArray arr)
+            {
+                for (int i = 0; i < arr.Count; i++)
+                {
+                    ValidateDepth(arr[i], maxDepth, $"{path}[{i}]", currentDepth + 1);
+                }
+            }
+        }
+
         private JObject HandleParsingError(Exception ex, string input)
         {
             if (Config.IgnoreErrors)
             {
                 Console.Error.WriteLine($"Warning: TOML parsing error ignored: {ex.Message}");
-
-                return new JObject
-                {
-                    ["error"] = ex.Message,
-                    ["raw"] = input.Length > 1000
-                        ? string.Concat(input.AsSpan(0, 1000), "...")
-                        : input
-                };
+                return CreateErrorToken(ex, input);
             }
             throw new FormatException(ex.Message, ex);
+        }
+
+        private static JObject CreateErrorToken(Exception ex, string input)
+        {
+            return new JObject
+            {
+                ["error"] = ex.Message,
+                ["error_type"] = ex.GetType().Name,
+                ["raw_snippet"] = input.Length > 1000
+                    ? string.Concat(input.AsSpan(0, 1000), "...")
+                    : input,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
+            };
         }
 
         private static void RemoveMetadataProperties(JToken token)

@@ -12,146 +12,10 @@ namespace FormatConverter.Toml
 
         public override string Serialize(JToken data)
         {
-            if (Config.UseStreaming)
-            {
-                return string.Join("", SerializeStream([data]));
-            }
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
 
-            return SerializeRegular(data);
-        }
-
-        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
-        {
-            if (!Config.UseStreaming)
-            {
-                yield return Serialize(new JArray(data));
-                yield break;
-            }
-
-            foreach (var token in data)
-            {
-                foreach (var chunk in StreamToken(token))
-                {
-                    yield return chunk;
-                }
-            }
-        }
-
-        private IEnumerable<string> StreamToken(JToken token)
-        {
-            var processed = ProcessDataBeforeSerialization(token);
-
-            if (processed.Type == JTokenType.Array)
-            {
-                return StreamArray((JArray)processed);
-            }
-            else if (processed.Type == JTokenType.Object)
-            {
-                return StreamObject((JObject)processed);
-            }
-            else
-            {
-                return [SerializeRegular(processed)];
-            }
-        }
-
-        private IEnumerable<string> StreamArray(JArray array)
-        {
-            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
-            var buffer = new List<JToken>();
-            var currentBufferSize = 0;
-            var totalProcessed = 0;
-            var totalItems = array.Count;
-
-            foreach (var item in array)
-            {
-                if (item.Type != JTokenType.Object)
-                {
-                    yield return SerializeRegular(item);
-                    continue;
-                }
-
-                var serializedItem = SerializeTomlObject((JObject)item, string.Empty);
-                var itemSizeInBytes = Encoding.UTF8.GetByteCount(serializedItem);
-
-                if (buffer.Count > 0 && currentBufferSize + itemSizeInBytes > bufferSize)
-                {
-                    yield return SerializeBufferedItems(buffer);
-                    buffer.Clear();
-                    currentBufferSize = 0;
-
-                    if (totalItems > 0 && totalProcessed % Math.Max(1, totalItems / 10) == 0)
-                    {
-                        var progress = (double)totalProcessed / totalItems * 100;
-                        Console.WriteLine($"Serialization progress: {progress:F1}%");
-                    }
-                }
-
-                buffer.Add(item);
-                currentBufferSize += itemSizeInBytes;
-                totalProcessed++;
-            }
-
-            if (buffer.Count > 0)
-            {
-                yield return SerializeBufferedItems(buffer);
-            }
-        }
-
-        private IEnumerable<string> StreamObject(JObject obj)
-        {
-            var properties = obj.Properties().ToList();
-            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
-            var maxPropertiesPerChunk = Math.Max(5, bufferSize / 1024);
-
-            var currentChunk = new JObject();
-            var processedCount = 0;
-            var totalProperties = properties.Count;
-
-            foreach (var prop in properties)
-            {
-                currentChunk[prop.Name] = prop.Value;
-                processedCount++;
-
-                if (processedCount >= maxPropertiesPerChunk)
-                {
-                    yield return SerializeRegular(currentChunk);
-                    currentChunk = new JObject();
-                    processedCount = 0;
-
-                    var progress = (double)processedCount / totalProperties * 100;
-                    if (progress % 10 < 1)
-                    {
-                        Console.WriteLine($"Object streaming progress: {progress:F1}%");
-                    }
-                }
-            }
-
-            if (processedCount > 0)
-            {
-                yield return SerializeRegular(currentChunk);
-            }
-        }
-
-        private string SerializeBufferedItems(List<JToken> items)
-        {
-            var sb = new StringBuilder();
-
-            foreach (var item in items)
-            {
-                if (item.Type == JTokenType.Object)
-                {
-                    sb.Append(SerializeTomlObject((JObject)item, string.Empty));
-                    sb.AppendLine();
-                }
-            }
-
-            return sb.ToString();
-        }
-
-        private string SerializeRegular(JToken data)
-        {
-            var processed = ProcessDataBeforeSerialization(data);
+            var processed = PreprocessToken(data);
 
             try
             {
@@ -160,57 +24,147 @@ namespace FormatConverter.Toml
 
                 if (processed is JObject obj)
                 {
-                    return SerializeTomlObject(obj, string.Empty);
+                    WriteObject(obj, string.Empty, 0);
+                    var result = _output.ToString().TrimEnd();
+
+                    if (Config.StrictMode)
+                    {
+                        ValidateToml(result);
+                    }
+
+                    return result;
                 }
                 else
                 {
                     throw new FormatException("TOML root must be an object/table");
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (Config.IgnoreErrors)
             {
-                return HandleSerializationError(ex, processed);
+                return CreateErrorToml(ex.Message, ex.GetType().Name, processed);
             }
         }
 
-        private string SerializeTomlObject(JObject obj, string sectionPath)
+        public override void SerializeStream(IEnumerable<JToken> data, Stream output, CancellationToken cancellationToken = default)
         {
-            _output.Clear();
-            _writtenTables.Clear();
-            WriteObject(obj, sectionPath, 0);
-            return _output.ToString().TrimEnd();
-        }
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+            if (output == null)
+                throw new ArgumentNullException(nameof(output));
 
-        private JToken ProcessDataBeforeSerialization(JToken data)
-        {
-            if (Config.SortKeys)
-                data = SortKeysRecursively(data);
+            var chunkSize = GetChunkSize();
 
-            if (Config.ArrayWrap && data.Type != JTokenType.Array)
-                return new JArray(data);
+            using var writer = new StreamWriter(output, Config.Encoding, 8192, leaveOpen: true);
+            ConfigureTomlWriter(writer);
 
-            return data;
-        }
+            var buffer = new List<JToken>();
+            var isFirst = true;
 
-        private string HandleSerializationError(Exception ex, JToken data)
-        {
-            if (Config.IgnoreErrors)
+            foreach (var token in data)
             {
-                Console.WriteLine($"Warning: TOML serialization error ignored: {ex.Message}");
-                return CreateErrorToml(ex.Message, data);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var processed = PreprocessToken(token);
+                buffer.Add(processed);
+
+                if (buffer.Count >= chunkSize)
+                {
+                    WriteChunkToStream(buffer, writer, cancellationToken, ref isFirst);
+                    buffer.Clear();
+                }
             }
-            throw new FormatException($"TOML serialization failed: {ex.Message}", ex);
+
+            if (buffer.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                WriteChunkToStream(buffer, writer, cancellationToken, ref isFirst);
+            }
+
+            writer.Flush();
         }
 
-        private static string CreateErrorToml(string errorMessage, JToken data)
+        public void SerializeStream(IEnumerable<JToken> data, string outputPath, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrEmpty(outputPath))
+                throw new ArgumentNullException(nameof(outputPath));
+
+            using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192);
+            SerializeStream(data, fileStream, cancellationToken);
+        }
+
+        private void WriteChunkToStream(List<JToken> items, StreamWriter writer, CancellationToken ct, ref bool isFirst)
+        {
+            if (items.Count == 0) return;
+
+            for (int i = 0; i < items.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                try
+                {
+                    if (!isFirst && !Config.Minify)
+                    {
+                        writer.WriteLine();
+                        writer.WriteLine("# ---");
+                        writer.WriteLine();
+                    }
+                    isFirst = false;
+
+                    _output.Clear();
+                    _writtenTables.Clear();
+
+                    if (items[i] is JObject obj)
+                    {
+                        WriteObject(obj, string.Empty, 0);
+                        writer.WriteLine(_output.ToString().TrimEnd());
+                    }
+                    else
+                    {
+                        throw new FormatException("TOML documents must be objects");
+                    }
+                }
+                catch (Exception ex) when (Config.IgnoreErrors)
+                {
+                    var errorToml = CreateErrorToml(ex.Message, ex.GetType().Name, items[i]);
+                    writer.WriteLine(errorToml);
+                }
+            }
+
+            writer.Flush();
+        }
+
+        private void ConfigureTomlWriter(StreamWriter writer)
+            => writer.NewLine = Config.Minify ? "\n" : Environment.NewLine;
+
+        private int GetChunkSize() => Config.ChunkSize > 0 ? Config.ChunkSize : 100;
+
+        private void ValidateToml(string toml)
+        {
+            if (!Config.StrictMode) return;
+
+            try
+            {
+                var result = Tomlyn.Toml.Parse(toml);
+                if (result.HasErrors)
+                {
+                    var errors = string.Join(", ", result.Diagnostics.Select(d => d.ToString()));
+                    throw new FormatException($"Generated TOML is invalid: {errors}");
+                }
+            }
+            catch when (!Config.StrictMode) { }
+        }
+
+        private static string CreateErrorToml(string errorMessage, string errorType, JToken originalToken)
         {
             var sb = new StringBuilder();
-            sb.AppendLine($"# Error serializing to TOML: {errorMessage}");
+            sb.AppendLine($"# Error: {errorMessage}");
+            sb.AppendLine($"# Error Type: {errorType}");
+            sb.AppendLine($"# Original Type: {originalToken.Type}");
             sb.AppendLine($"# Timestamp: {DateTime.UtcNow:O}");
             sb.AppendLine();
             sb.AppendLine("# Original data (as comment):");
 
-            var dataStr = data.ToString();
+            var dataStr = originalToken.ToString();
             if (dataStr.Length > 500)
             {
                 dataStr = string.Concat(dataStr.AsSpan(0, 500), "...");
@@ -218,7 +172,7 @@ namespace FormatConverter.Toml
 
             foreach (var line in dataStr.Split('\n'))
             {
-                sb.AppendLine($"# {line}");
+                sb.AppendLine($"# {line.TrimEnd()}");
             }
 
             return sb.ToString();
@@ -253,18 +207,11 @@ namespace FormatConverter.Toml
                 {
                     if (Config.IgnoreErrors)
                     {
-                        Console.WriteLine($"Warning: Skipping property '{prop.Name}' - incompatible with TOML format");
+                        Console.Error.WriteLine($"Warning: Skipping property '{prop.Name}' - incompatible with TOML format");
                         continue;
                     }
                     throw;
                 }
-            }
-
-            if (Config.SortKeys)
-            {
-                simpleProperties = simpleProperties.OrderBy(p => p.Name).ToList();
-                complexProperties = complexProperties.OrderBy(p => p.Name).ToList();
-                arrayOfTablesProperties = arrayOfTablesProperties.OrderBy(p => p.Name).ToList();
             }
 
             foreach (var prop in simpleProperties)
@@ -279,7 +226,9 @@ namespace FormatConverter.Toml
 
             foreach (var prop in complexProperties)
             {
-                var newSectionPath = string.IsNullOrEmpty(sectionPath) ? prop.Name : $"{sectionPath}.{prop.Name}";
+                var newSectionPath = string.IsNullOrEmpty(sectionPath)
+                    ? EscapeTomlKey(prop.Name)
+                    : $"{sectionPath}.{EscapeTomlKey(prop.Name)}";
 
                 if (prop.Value.Type == JTokenType.Object)
                 {
@@ -293,7 +242,9 @@ namespace FormatConverter.Toml
 
             foreach (var prop in arrayOfTablesProperties)
             {
-                var newSectionPath = string.IsNullOrEmpty(sectionPath) ? prop.Name : $"{sectionPath}.{prop.Name}";
+                var newSectionPath = string.IsNullOrEmpty(sectionPath)
+                    ? EscapeTomlKey(prop.Name)
+                    : $"{sectionPath}.{EscapeTomlKey(prop.Name)}";
                 WriteArrayOfTables(newSectionPath, (JArray)prop.Value);
             }
         }
@@ -332,27 +283,34 @@ namespace FormatConverter.Toml
         {
             var indent = Config.PrettyPrint ? new string(' ', depth * (Config.IndentSize ?? 2)) : string.Empty;
             var formattedKey = NeedsQuoting(key) ? $"\"{key}\"" : key;
-            var formattedValue = FormatValue(value);
+            var formattedValue = FormatTomlValue(value);
 
             _output.AppendLine($"{indent}{formattedKey} = {formattedValue}");
         }
 
-        private string? FormatValue(JToken value)
+        private string? FormatTomlValue(JToken value)
         {
             return value.Type switch
             {
-                JTokenType.String => FormatString(value.Value<string>()),
+                JTokenType.Null => HandleNullValue(),
+                JTokenType.String => FormatString(value.Value<string>()!),
                 JTokenType.Boolean => value.Value<bool>().ToString().ToLower(),
-                JTokenType.Integer => FormatNumber(value.Value<long>()),
-                JTokenType.Float => FormatNumber(value.Value<double>()),
+                JTokenType.Integer => FormatInteger(value.Value<long>()),
+                JTokenType.Float => FormatFloat(value.Value<double>()),
                 JTokenType.Date => FormatDateTime(value.Value<DateTime>()),
                 JTokenType.Array => FormatArray((JArray)value),
                 JTokenType.Object => FormatInlineTable((JObject)value),
-                JTokenType.Null => Config.TomlStrictTypes ?
-                    throw new FormatException("TOML does not support null values. Disable TomlStrictTypes to ignore nulls.") :
-                    "\"\"",
                 _ => $"\"{value}\""
             };
+        }
+
+        private string HandleNullValue()
+        {
+            if (Config.TomlStrictTypes)
+            {
+                throw new FormatException("TOML does not support null values. Disable TomlStrictTypes to convert nulls to empty strings.");
+            }
+            return "\"\"";
         }
 
         private string FormatString(string str)
@@ -367,39 +325,59 @@ namespace FormatConverter.Toml
             return $"\"{EscapeString(str)}\"";
         }
 
-        private string? FormatNumber(object number)
+        private string FormatInteger(long number)
         {
-            if (!string.IsNullOrEmpty(Config.NumberFormat))
+            if (!string.IsNullOrEmpty(Config.NumberFormat) &&
+                Config.NumberFormat.Equals("hexadecimal", StringComparison.OrdinalIgnoreCase))
             {
-                return Config.NumberFormat.ToLower() switch
-                {
-                    "hexadecimal" when number is long l => $"0x{l:X}",
-                    "scientific" when number is double d => d.ToString("E", CultureInfo.InvariantCulture),
-                    _ => number.ToString()
-                };
+                return $"0x{number:X}";
             }
-            return number.ToString();
+            return number.ToString(CultureInfo.InvariantCulture);
         }
 
-        private string FormatDateTime(DateTime dateTime)
+        private string FormatFloat(double number)
+        {
+            if (Config.TomlStrictTypes && (double.IsNaN(number) || double.IsInfinity(number)))
+            {
+                throw new FormatException($"TOML does not support {(double.IsNaN(number) ? "NaN" : "Infinity")} values. Disable TomlStrictTypes to convert to string.");
+            }
+
+            if (double.IsNaN(number))
+                return "\"NaN\"";
+            if (double.IsPositiveInfinity(number))
+                return "\"Infinity\"";
+            if (double.IsNegativeInfinity(number))
+                return "\"-Infinity\"";
+
+            if (!string.IsNullOrEmpty(Config.NumberFormat) &&
+                Config.NumberFormat.Equals("scientific", StringComparison.OrdinalIgnoreCase))
+            {
+                return number.ToString("E", CultureInfo.InvariantCulture);
+            }
+
+            return number.ToString("G", CultureInfo.InvariantCulture);
+        }
+
+        protected override string FormatDateTime(DateTime dateTime)
         {
             if (!string.IsNullOrEmpty(Config.DateFormat))
             {
                 return Config.DateFormat.ToLower() switch
                 {
-                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                    _ => dateTime.ToString(Config.DateFormat)
+                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture),
+                    "rfc3339" => dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz", CultureInfo.InvariantCulture),
+                    _ => dateTime.ToString(Config.DateFormat, CultureInfo.InvariantCulture)
                 };
             }
 
-            return dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fff");
+            return dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fff", CultureInfo.InvariantCulture);
         }
 
         private string FormatArray(JArray array)
         {
             if (!array.Any()) return "[]";
 
-            var items = array.Select(FormatValue).ToArray();
+            var items = array.Select(FormatTomlValue).ToArray();
 
             if (array.All(item => IsSimpleArrayItem(item)))
             {
@@ -438,7 +416,7 @@ namespace FormatConverter.Toml
             var pairs = properties.Select(p =>
             {
                 var key = NeedsQuoting(p.Name) ? $"\"{p.Name}\"" : p.Name;
-                return $"{key} = {FormatValue(p.Value)}";
+                return $"{key} = {FormatTomlValue(p.Value)}";
             });
 
             return "{ " + string.Join(", ", pairs) + " }";
@@ -460,9 +438,10 @@ namespace FormatConverter.Toml
         }
 
         private static bool IsArrayOfTables(JArray array)
-        {
-            return array.All(item => item.Type == JTokenType.Object);
-        }
+            => array.Count > 0 && array.All(item => item.Type == JTokenType.Object);
+
+        private static string EscapeTomlKey(string key)
+            => key.Contains('.') || NeedsQuoting(key) ? $"\"{key}\"" : key;
 
         private static bool NeedsQuoting(string key)
         {
@@ -478,26 +457,6 @@ namespace FormatConverter.Toml
                      .Replace("\n", "\\n")
                      .Replace("\r", "\\r")
                      .Replace("\t", "\\t");
-        }
-
-        private JToken SortKeysRecursively(JToken token)
-        {
-            return token.Type switch
-            {
-                JTokenType.Object => SortJObject((JObject)token),
-                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
-                _ => token
-            };
-        }
-
-        private JObject SortJObject(JObject obj)
-        {
-            var sorted = new JObject();
-            foreach (var property in obj.Properties().OrderBy(p => p.Name))
-            {
-                sorted[property.Name] = SortKeysRecursively(property.Value);
-            }
-            return sorted;
         }
     }
 }
