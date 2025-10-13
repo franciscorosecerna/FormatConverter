@@ -3,14 +3,11 @@ using Newtonsoft.Json.Linq;
 using Google.Protobuf.WellKnownTypes;
 using Google.Protobuf;
 using System.Buffers;
-using System.Collections.Concurrent;
 
 namespace FormatConverter.Protobuf
 {
     public class ProtobufInputStrategy : BaseInputStrategy
     {
-        private static readonly ConcurrentDictionary<System.Type, System.Reflection.PropertyInfo[]> PropertyCache = new();
-
         public override JToken Parse(string input)
         {
             if (string.IsNullOrWhiteSpace(input))
