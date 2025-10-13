@@ -2,98 +2,344 @@
 using Newtonsoft.Json.Linq;
 using Google.Protobuf.WellKnownTypes;
 using Google.Protobuf;
+using System.Buffers;
+using System.Collections.Concurrent;
 
 namespace FormatConverter.Protobuf
 {
     public class ProtobufInputStrategy : BaseInputStrategy
     {
+        private static readonly ConcurrentDictionary<System.Type, System.Reflection.PropertyInfo[]> PropertyCache = new();
+
         public override JToken Parse(string input)
         {
-            if (Config.UseStreaming)
+            if (string.IsNullOrWhiteSpace(input))
             {
-                var firstToken = ParseStream(input).FirstOrDefault();
-                return firstToken ?? new JObject();
+                return Config.IgnoreErrors
+                    ? new JObject()
+                    : throw new ArgumentException("Protobuf input cannot be null or empty", nameof(input));
             }
 
             try
             {
-                var token = ParseProtobufDocument(input);
+                var bytes = DecodeInput(input);
+                var token = ParseProtobufDocument(bytes);
 
-                if (Config.SortKeys)
-                    token = SortKeysRecursively(token);
+                if (Config.NoMetadata)
+                    token = RemoveMetadataProperties(token);
 
                 return token;
             }
-            catch (Exception ex) when (ex is not FormatException)
+            catch (Exception ex) when (ex is not FormatException && ex is not ArgumentException)
             {
                 return HandleParsingError(ex, input);
             }
         }
 
-        public override IEnumerable<JToken> ParseStream(string input)
+        public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken = default)
         {
-            if (!Config.UseStreaming)
-            {
-                yield return Parse(input);
-                yield break;
-            }
+            if (string.IsNullOrWhiteSpace(path))
+                throw new ArgumentException("Path cannot be null or empty.", nameof(path));
 
-            IEnumerable<JToken> tokens;
+            if (!File.Exists(path))
+                throw new FileNotFoundException("Input file not found.", path);
+
+            return ParseStreamInternal(path, cancellationToken);
+        }
+
+        private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
+        {
+            using var fileStream = File.OpenRead(path);
+
+            var fileSize = fileStream.Length;
+            var showProgress = fileSize > 10_485_760;
+
+            const int BufferSize = 8192;
+            var arrayPool = ArrayPool<byte>.Shared;
+            byte[] buffer = arrayPool.Rent(BufferSize);
+            byte[] accumulator = arrayPool.Rent(BufferSize * 2);
+            int accumulatorLength = 0;
+
+            int bytesRead;
+            int messagesProcessed = 0;
 
             try
             {
-                if (HasMultipleMessages(input))
+                while ((bytesRead = fileStream.Read(buffer, 0, BufferSize)) > 0)
                 {
-                    tokens = StreamMultipleMessages(input);
-                }
-                else if (HasLargeRepeatedFields(input))
-                {
-                    tokens = StreamLargeRepeatedFields(input);
-                }
-                else if (HasManyFields(input))
-                {
-                    tokens = StreamByFields(input);
-                }
-                else
-                {
-                    tokens = [ParseProtobufDocument(input)];
-                }
-            }
-            catch (InvalidProtocolBufferException ex)
-            {
-                tokens = HandleStreamingError(ex, input);
-            }
-            catch (Exception ex) when (ex is not FormatException)
-            {
-                tokens = HandleStreamingError(ex, input);
-            }
+                    cancellationToken.ThrowIfCancellationRequested();
 
-            foreach (var token in tokens)
+                    if (accumulatorLength + bytesRead > accumulator.Length)
+                    {
+                        var newAccumulator = arrayPool.Rent(Math.Max(accumulator.Length * 2, accumulatorLength + bytesRead));
+                        Buffer.BlockCopy(accumulator, 0, newAccumulator, 0, accumulatorLength);
+                        arrayPool.Return(accumulator);
+                        accumulator = newAccumulator;
+                    }
+
+                    Buffer.BlockCopy(buffer, 0, accumulator, accumulatorLength, bytesRead);
+                    accumulatorLength += bytesRead;
+
+                    var processed = 0;
+                    while (processed < accumulatorLength)
+                    {
+                        var availableSpan = new ReadOnlySpan<byte>(accumulator, processed, accumulatorLength - processed);
+
+                        var (success, token, consumed, error) = TryReadNextProtobufMessage(
+                            availableSpan,
+                            path);
+
+                        if (success && token != null)
+                        {
+                            messagesProcessed++;
+
+                            if (showProgress && messagesProcessed % 100 == 0)
+                            {
+                                var progress = (double)fileStream.Position / fileStream.Length * 100;
+                                Console.Error.Write($"\rProcessing: {progress:F1}% ({messagesProcessed} messages)");
+                            }
+
+                            if (Config.NoMetadata)
+                                token = RemoveMetadataProperties(token);
+
+                            yield return token;
+
+                            processed += consumed;
+                        }
+                        else if (error != null)
+                        {
+                            if (Config.IgnoreErrors)
+                            {
+                                Console.Error.WriteLine($"\nWarning: {error.Message}");
+                                yield return CreateErrorToken(error, $"File: {path}, Offset: {fileStream.Position - accumulatorLength + processed}");
+                                processed += Math.Max(1, consumed);
+                            }
+                            else
+                            {
+                                throw error;
+                            }
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+
+                    if (processed > 0)
+                    {
+                        var remaining = accumulatorLength - processed;
+                        if (remaining > 0)
+                        {
+                            Buffer.BlockCopy(accumulator, processed, accumulator, 0, remaining);
+                        }
+                        accumulatorLength = remaining;
+                    }
+                }
+
+                if (accumulatorLength > 0)
+                {
+                    if (Config.IgnoreErrors)
+                    {
+                        Console.Error.WriteLine($"\nWarning: {accumulatorLength} bytes of incomplete Protobuf data at end of file");
+                        yield return CreateErrorToken(
+                            new FormatException($"Incomplete Protobuf data: {accumulatorLength} bytes remaining"),
+                            $"File: {path}");
+                    }
+                    else
+                    {
+                        throw new FormatException($"Incomplete Protobuf message at end of file ({accumulatorLength} bytes remaining)");
+                    }
+                }
+
+                if (showProgress)
+                {
+                    Console.Error.WriteLine($"\rCompleted: {messagesProcessed} messages processed");
+                }
+            }
+            finally
             {
-                yield return token;
+                arrayPool.Return(buffer);
+                arrayPool.Return(accumulator);
             }
         }
 
-        private JToken ParseProtobufDocument(string input)
+        private (bool success, JToken? token, int consumed, Exception? error)
+            TryReadNextProtobufMessage(ReadOnlySpan<byte> data, string path)
         {
-            if (string.IsNullOrEmpty(input))
+            try
+            {
+                if (data.Length < 1)
+                    return (false, null, 0, null);
+
+                var messageBytes = TryExtractLengthDelimitedMessage(data, out int consumed);
+
+                if (messageBytes != null)
+                {
+                    var token = ParseProtobufDocument(messageBytes);
+                    return (true, token, consumed, null);
+                }
+
+                messageBytes = TryExtractSingleMessage(data, out consumed);
+
+                if (messageBytes != null)
+                {
+                    var token = ParseProtobufDocument(messageBytes);
+                    return (true, token, consumed, null);
+                }
+
+                return (false, null, 0, null);
+            }
+            catch (InvalidProtocolBufferException ex)
+            {
+                return (false, null, 0,
+                    new FormatException($"Invalid Protobuf data: {ex.Message}", ex));
+            }
+            catch (Exception ex)
+            {
+                return (false, null, 0,
+                    new FormatException($"Unexpected Protobuf error in {path}: {ex.Message}", ex));
+            }
+        }
+
+        private static byte[]? TryExtractLengthDelimitedMessage(ReadOnlySpan<byte> data, out int consumed)
+        {
+            consumed = 0;
+
+            try
+            {
+                var (length, varintBytes) = TryReadVarintFromSpan(data);
+
+                if (varintBytes == 0)
+                    return null;
+
+                if (data.Length < varintBytes + (int)length)
+                    return null;
+
+                consumed = varintBytes + (int)length;
+                var messageData = data.Slice(varintBytes, (int)length).ToArray();
+
+                return messageData;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static byte[]? TryExtractSingleMessage(ReadOnlySpan<byte> data, out int consumed)
+        {
+            consumed = 0;
+
+            try
+            {
+                var tempData = data.ToArray();
+
+                using var testStream = new MemoryStream(tempData, false);
+                using var reader = new BinaryReader(testStream);
+
+                var fields = new HashSet<int>();
+                var lastValidPosition = 0L;
+
+                while (testStream.Position < testStream.Length)
+                {
+                    var positionBefore = testStream.Position;
+
+                    try
+                    {
+                        var tag = ReadVarint(reader);
+                        var wireType = (int)(tag & 0x7);
+                        var fieldNum = (int)(tag >> 3);
+
+                        if (fieldNum == 0 || wireType > 5)
+                            break;
+
+                        fields.Add(fieldNum);
+                        SkipFieldValue(reader, wireType);
+
+                        lastValidPosition = testStream.Position;
+                    }
+                    catch
+                    {
+                        break;
+                    }
+                }
+
+                if (fields.Count > 0 && lastValidPosition > 0)
+                {
+                    consumed = (int)lastValidPosition;
+                    return data.Slice(0, consumed).ToArray();
+                }
+
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static (ulong value, int bytesRead) TryReadVarintFromSpan(ReadOnlySpan<byte> data)
+        {
+            ulong value = 0;
+            int shift = 0;
+            int bytesRead = 0;
+
+            for (int i = 0; i < data.Length && i < 10; i++)
+            {
+                var b = data[i];
+                bytesRead++;
+                value |= (ulong)(b & 0x7F) << shift;
+
+                if ((b & 0x80) == 0)
+                    return (value, bytesRead);
+
+                shift += 7;
+                if (shift >= 64)
+                    return (0, 0);
+            }
+
+            return (0, 0);
+        }
+
+        private JToken ParseProtobufDocument(byte[] bytes)
+        {
+            if (bytes == null || bytes.Length == 0)
             {
                 throw new FormatException("Protobuf input is empty or null");
             }
-
-            byte[] bytes = DecodeInput(input);
 
             JToken result = TryParseAsStruct(bytes) ??
                            TryParseAsAny(bytes) ??
                            TryParseAsValue(bytes) ??
                            ParseAsGenericMessage(bytes);
 
-            if (Config.NoMetadata)
+            return result;
+        }
+
+        private JObject HandleParsingError(Exception ex, string input)
+        {
+            if (Config.IgnoreErrors)
             {
-                result = RemoveMetadataProperties(result);
+                Console.Error.WriteLine($"Warning: Protobuf parsing error: {ex.Message}");
+                return CreateErrorToken(ex, input);
             }
 
-            return result;
+            throw new FormatException($"Invalid Protobuf: {ex.Message}", ex);
+        }
+
+        private static JObject CreateErrorToken(Exception ex, string context)
+        {
+            var snippet = context.Length > 1000
+                ? string.Concat(context.AsSpan(0, 1000), "...")
+                : context;
+
+            return new JObject
+            {
+                ["error"] = ex.Message,
+                ["error_type"] = ex.GetType().Name,
+                ["raw_snippet"] = snippet,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
+            };
         }
 
         private static byte[] DecodeInput(string input)
@@ -108,320 +354,34 @@ namespace FormatConverter.Protobuf
             }
         }
 
-        private static bool HasMultipleMessages(string input)
+        private static byte[] ParseHexString(string hex)
         {
-            try
+            hex = hex.Replace("0x", "").Replace(" ", "").Replace("-", "");
+
+            if (hex.Length % 2 != 0)
+                throw new FormatException("Invalid hex string length");
+
+            var bytes = new byte[hex.Length / 2];
+            var hexSpan = hex.AsSpan();
+
+            for (int i = 0; i < bytes.Length; i++)
             {
-                var bytes = Convert.FromBase64String(input);
-                return bytes.Length > 10000;
+                var slice = hexSpan.Slice(i * 2, 2);
+                bytes[i] = (byte)((GetHexValue(slice[0]) << 4) | GetHexValue(slice[1]));
             }
-            catch
-            {
-                return false;
-            }
+
+            return bytes;
         }
 
-        private static bool HasLargeRepeatedFields(string input)
+        private static int GetHexValue(char c)
         {
-            try
+            return c switch
             {
-                var bytes = DecodeInput(input);
-                using var stream = new MemoryStream(bytes);
-                using var reader = new BinaryReader(stream);
-
-                var fieldCounts = new Dictionary<int, int>();
-
-                while (stream.Position < stream.Length && stream.Position < 1000)
-                {
-                    try
-                    {
-                        var tag = ReadVarint(reader);
-                        var wireType = (int)(tag & 0x7);
-                        var fieldNum = (int)(tag >> 3);
-
-                        fieldCounts[fieldNum] = fieldCounts.GetValueOrDefault(fieldNum) + 1;
-
-                        SkipFieldValue(reader, wireType);
-                    }
-                    catch
-                    {
-                        break;
-                    }
-                }
-
-                return fieldCounts.Values.Any(count => count > 20);
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static bool HasManyFields(string input)
-        {
-            try
-            {
-                var bytes = DecodeInput(input);
-                using var stream = new MemoryStream(bytes);
-                using var reader = new BinaryReader(stream);
-
-                var uniqueFields = new HashSet<int>();
-
-                while (stream.Position < stream.Length && stream.Position < 500)
-                {
-                    try
-                    {
-                        var tag = ReadVarint(reader);
-                        var wireType = (int)(tag & 0x7);
-                        var fieldNum = (int)(tag >> 3);
-
-                        uniqueFields.Add(fieldNum);
-
-                        SkipFieldValue(reader, wireType);
-                    }
-                    catch
-                    {
-                        break;
-                    }
-                }
-
-                return uniqueFields.Count > 15;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private IEnumerable<JToken> StreamMultipleMessages(string input)
-        {
-            var tokens = new List<JToken>();
-            const int chunkSize = 8192;
-
-            try
-            {
-                var bytes = DecodeInput(input);
-
-                for (int offset = 0; offset < bytes.Length; offset += chunkSize)
-                {
-                    var chunkLength = Math.Min(chunkSize, bytes.Length - offset);
-                    var chunk = new byte[chunkLength];
-                    Array.Copy(bytes, offset, chunk, 0, chunkLength);
-
-                    var chunkResult = TryParseAsStruct(chunk) ??
-                                     TryParseAsAny(chunk) ??
-                                     TryParseAsValue(chunk) ??
-                                     ParseAsGenericMessage(chunk);
-
-                    var chunkObject = new JObject();
-                    if (chunkResult is JObject obj)
-                    {
-                        foreach (var prop in obj.Properties())
-                        {
-                            chunkObject[prop.Name] = prop.Value;
-                        }
-                    }
-                    else
-                    {
-                        chunkObject["value"] = chunkResult;
-                    }
-
-                    chunkObject["_chunk_info"] = new JObject
-                    {
-                        ["chunk_start"] = offset,
-                        ["chunk_size"] = chunkLength,
-                        ["total_size"] = bytes.Length,
-                        ["type"] = "protobuf_chunk"
-                    };
-
-                    tokens.Add(Config.SortKeys ? SortKeysRecursively(chunkObject) : chunkObject);
-                }
-            }
-            catch
-            {
-                tokens.Add(ParseProtobufDocument(input));
-            }
-
-            return tokens;
-        }
-
-        private IEnumerable<JToken> StreamLargeRepeatedFields(string input)
-        {
-            var chunks = new List<JToken>();
-            const int itemsPerChunk = 10;
-
-            try
-            {
-                var bytes = DecodeInput(input);
-                using var stream = new MemoryStream(bytes);
-                using var reader = new BinaryReader(stream);
-
-                var fieldGroups = new Dictionary<int, List<JToken>>();
-                var scalarFields = new JObject();
-
-                while (stream.Position < stream.Length)
-                {
-                    try
-                    {
-                        var tag = ReadVarint(reader);
-                        var wireType = (int)(tag & 0x7);
-                        var fieldNum = (int)(tag >> 3);
-
-                        var fieldValue = ReadFieldValue(reader, wireType);
-
-                        if (!fieldGroups.ContainsKey(fieldNum))
-                        {
-                            fieldGroups[fieldNum] = new List<JToken>();
-                        }
-
-                        fieldGroups[fieldNum].Add(fieldValue);
-                    }
-                    catch
-                    {
-                        break;
-                    }
-                }
-
-                foreach (var kvp in fieldGroups)
-                {
-                    var fieldNum = kvp.Key;
-                    var values = kvp.Value;
-
-                    if (values.Count > itemsPerChunk)
-                    {
-                        for (int i = 0; i < values.Count; i += itemsPerChunk)
-                        {
-                            var chunkValues = values.Skip(i).Take(itemsPerChunk).ToList();
-                            var chunkObject = new JObject();
-                            chunkObject[$"field_{fieldNum}"] = new JArray(chunkValues);
-
-                            chunkObject["_chunk_info"] = new JObject
-                            {
-                                ["field_number"] = fieldNum,
-                                ["chunk_start"] = i,
-                                ["chunk_size"] = chunkValues.Count,
-                                ["total_items"] = values.Count,
-                                ["type"] = "repeated_field_chunk"
-                            };
-
-                            chunks.Add(Config.SortKeys ? SortKeysRecursively(chunkObject) : chunkObject);
-                        }
-                    }
-                    else
-                    {
-                        scalarFields[$"field_{fieldNum}"] = values.Count == 1 ? values[0] : new JArray(values);
-                    }
-                }
-
-                if (scalarFields.Count > 0)
-                {
-                    chunks.Insert(0, Config.SortKeys ? SortKeysRecursively(scalarFields) : scalarFields);
-                }
-            }
-            catch
-            {
-                chunks.Add(ParseProtobufDocument(input));
-            }
-
-            return chunks;
-        }
-
-        private IEnumerable<JToken> StreamByFields(string input)
-        {
-            var chunks = new List<JToken>();
-            const int fieldsPerChunk = 5;
-
-            try
-            {
-                var bytes = DecodeInput(input);
-                using var stream = new MemoryStream(bytes);
-                using var reader = new BinaryReader(stream);
-
-                var currentChunk = new JObject();
-                var processedFields = 0;
-                var uniqueFields = new HashSet<int>();
-
-                while (stream.Position < stream.Length)
-                {
-                    try
-                    {
-                        var tag = ReadVarint(reader);
-                        var wireType = (int)(tag & 0x7);
-                        var fieldNum = (int)(tag >> 3);
-
-                        var fieldValue = ReadFieldValue(reader, wireType);
-
-                        if (!uniqueFields.Contains(fieldNum))
-                        {
-                            currentChunk[$"field_{fieldNum}"] = fieldValue;
-                            uniqueFields.Add(fieldNum);
-                            processedFields++;
-
-                            if (processedFields >= fieldsPerChunk)
-                            {
-                                chunks.Add(Config.SortKeys ? SortKeysRecursively(currentChunk) : currentChunk);
-                                currentChunk = new JObject();
-                                processedFields = 0;
-                                uniqueFields.Clear();
-                            }
-                        }
-                        else
-                        {
-                            var existingValue = currentChunk[$"field_{fieldNum}"];
-                            if (existingValue is JArray array)
-                            {
-                                array.Add(fieldValue);
-                            }
-                            else
-                            {
-                                currentChunk[$"field_{fieldNum}"] = new JArray { existingValue, fieldValue };
-                            }
-                        }
-                    }
-                    catch
-                    {
-                        break;
-                    }
-                }
-
-                if (processedFields > 0)
-                {
-                    chunks.Add(Config.SortKeys ? SortKeysRecursively(currentChunk) : currentChunk);
-                }
-            }
-            catch
-            {
-                chunks.Add(ParseProtobufDocument(input));
-            }
-
-            return chunks;
-        }
-
-        private IEnumerable<JToken> HandleStreamingError(Exception ex, string input)
-        {
-            if (Config.IgnoreErrors)
-            {
-                Console.WriteLine($"Warning: Protobuf streaming error ignored: {ex.Message}");
-                return [HandleParsingError(ex, input)];
-            }
-            else
-            {
-                throw new FormatException($"Protobuf streaming failed: {ex.Message}", ex);
-            }
-        }
-
-        private JObject HandleParsingError(Exception ex, string input)
-        {
-            if (Config.IgnoreErrors)
-            {
-                Console.WriteLine($"Warning: Protobuf parsing error ignored: {ex.Message}");
-                return new JObject
-                {
-                    ["error"] = ex.Message,
-                    ["raw"] = input.Length > 1000 ? string.Concat(input.AsSpan(0, 1000), "...") : input
-                };
-            }
-            throw new FormatException($"Invalid Protobuf: {ex.Message}", ex);
+                >= '0' and <= '9' => c - '0',
+                >= 'A' and <= 'F' => c - 'A' + 10,
+                >= 'a' and <= 'f' => c - 'a' + 10,
+                _ => throw new FormatException($"Invalid hex character: {c}")
+            };
         }
 
         private JToken RemoveMetadataProperties(JToken token)
@@ -467,24 +427,6 @@ namespace FormatConverter.Protobuf
                 default:
                     throw new FormatException($"Unknown wire type: {wireType}");
             }
-        }
-
-        private static byte[] ParseHexString(string hex)
-        {
-            hex = hex.Replace("0x", "").Replace(" ", "").Replace("-", "");
-
-            if (hex.Length % 2 != 0)
-            {
-                throw new FormatException("Invalid hex string length");
-            }
-
-            var bytes = new byte[hex.Length / 2];
-            for (int i = 0; i < bytes.Length; i++)
-            {
-                bytes[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
-            }
-
-            return bytes;
         }
 
         private JObject? TryParseAsStruct(byte[] bytes)
@@ -555,7 +497,7 @@ namespace FormatConverter.Protobuf
                         }
                         else
                         {
-                            fields[fieldKey] = new JArray { existingValue, fieldValue };
+                            fields[fieldKey] = new JArray { existingValue!, fieldValue };
                         }
                     }
                     else
@@ -604,7 +546,7 @@ namespace FormatConverter.Protobuf
             return value.KindCase switch
             {
                 Value.KindOneofCase.StringValue => new JValue(value.StringValue),
-                Value.KindOneofCase.NumberValue => new JValue(FormatNumberValue(value.NumberValue)),
+                Value.KindOneofCase.NumberValue => new JValue(value.NumberValue),
                 Value.KindOneofCase.BoolValue => new JValue(value.BoolValue),
                 Value.KindOneofCase.NullValue => JValue.CreateNull(),
                 Value.KindOneofCase.ListValue => ConvertListValueToJArray(value.ListValue),
@@ -623,20 +565,6 @@ namespace FormatConverter.Protobuf
             }
 
             return result;
-        }
-
-        private object FormatNumberValue(double number)
-        {
-            if (!string.IsNullOrEmpty(Config.NumberFormat))
-            {
-                return Config.NumberFormat.ToLower() switch
-                {
-                    "hexadecimal" => $"0x{(long)number:X}",
-                    "scientific" => number.ToString("E"),
-                    _ => number
-                };
-            }
-            return number;
         }
 
         private static ulong ReadVarint(BinaryReader reader)
@@ -681,7 +609,7 @@ namespace FormatConverter.Protobuf
                     return new JValue(str);
                 }
             }
-            finally { }
+            catch { }
 
             return new JValue(Convert.ToBase64String(bytes));
         }
@@ -689,26 +617,6 @@ namespace FormatConverter.Protobuf
         private static bool IsValidUtf8String(string str)
         {
             return str.All(c => !char.IsControl(c) || char.IsWhiteSpace(c));
-        }
-
-        private JToken SortKeysRecursively(JToken token)
-        {
-            return token.Type switch
-            {
-                JTokenType.Object => SortJObject((JObject)token),
-                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
-                _ => token
-            };
-        }
-
-        private JObject SortJObject(JObject obj)
-        {
-            var sorted = new JObject();
-            foreach (var property in obj.Properties().OrderBy(p => p.Name))
-            {
-                sorted[property.Name] = SortKeysRecursively(property.Value);
-            }
-            return sorted;
         }
     }
 }
