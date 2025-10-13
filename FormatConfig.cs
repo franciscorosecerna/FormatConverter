@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using Google.Protobuf.WellKnownTypes;
+using System.Text;
 
 namespace FormatConverter
 {
@@ -44,8 +45,6 @@ namespace FormatConverter
         public bool MessagePackUseContractless { get; set; } = true;
         public bool MessagePackLz4Compression { get; set; }
         public bool MessagePackOldSpec { get; set; }
-        public int ArrayChunkSize { get; set; } = 100;
-        public int MapChunkSize { get; set; } = 50;
 
         //cbor specific
         public bool CborAllowIndefiniteLength { get; set; } = true;
@@ -111,8 +110,6 @@ namespace FormatConverter
                 MessagePackUseContractless = options.MessagePackUseContractless,
                 MessagePackLz4Compression = options.MessagePackLz4Compression,
                 MessagePackOldSpec = options.MessagePackOldSpec,
-                ArrayChunkSize = options.MessagePackArrayChunkSize,
-                MapChunkSize = options.MessagePackMapChunkSize,
 
                 //CBOR
                 CborAllowIndefiniteLength = options.CborAllowIndefiniteLength,
@@ -306,7 +303,7 @@ namespace FormatConverter
 
             if (!string.IsNullOrEmpty(NumberFormat))
             {
-                var validFormats = new[] { "decimal", "hexadecimal", "scientific" };
+                var validFormats = new[] { "decimal", "hexadecimal", "scientific", "raw" };
                 if (!Array.Exists(validFormats, f => f.Equals(NumberFormat, StringComparison.OrdinalIgnoreCase)))
                 {
                     throw new ArgumentException($"Unsupported number format: {NumberFormat}. Valid options: {string.Join(", ", validFormats)}");
@@ -315,7 +312,7 @@ namespace FormatConverter
 
             if (!string.IsNullOrEmpty(DateFormat))
             {
-                var validFormats = new[] { "iso8601", "unix", "rfc3339" };
+                var validFormats = new[] { "iso8601", "unix", "rfc3339", "timestamp" };
                 if (!Array.Exists(validFormats, f => f.Equals(DateFormat, StringComparison.OrdinalIgnoreCase)))
                 {
                     try
@@ -327,16 +324,6 @@ namespace FormatConverter
                         throw new ArgumentException($"Invalid date format: {DateFormat}");
                     }
                 }
-            }
-
-            if (ArrayChunkSize <= 0)
-            {
-                throw new ArgumentException("Array chunk size must be positive");
-            }
-
-            if (MapChunkSize <= 0)
-            {
-                throw new ArgumentException("Map chunk size must be positive");
             }
 
             if (ChunkSize <= 0)
@@ -372,12 +359,12 @@ namespace FormatConverter
             }
 
             //MessagePack options
-            if (MessagePackLz4Compression || ArrayChunkSize != 100 || MapChunkSize != 50)
+            if (MessagePackLz4Compression || MessagePackOldSpec || MessagePackUseContractless)
             {
                 sb.AppendLine("  MessagePack Options:");
                 if (MessagePackLz4Compression) sb.AppendLine("    - LZ4 compression");
-                if (ArrayChunkSize != 100) sb.AppendLine($"    - Array chunk size: {ArrayChunkSize}");
-                if (MapChunkSize != 50) sb.AppendLine($"    - Map chunk size: {MapChunkSize}");
+                if (MessagePackOldSpec) sb.AppendLine("    - OldSpec");
+                if (MessagePackUseContractless) sb.AppendLine("    - ContractLess");
             }
 
             //CBOR options

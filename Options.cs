@@ -133,12 +133,6 @@ namespace FormatConverter
         [Option("msgpack-old-spec", HelpText = "Use old MessagePack specification format")]
         public bool MessagePackOldSpec { get; set; }
 
-        [Option("msgpack-array-chunk-size", Default = 100, MetaValue = "SIZE", HelpText = "Chunk size for streaming large MessagePack arrays")]
-        public int MessagePackArrayChunkSize { get; set; } = 100;
-
-        [Option("msgpack-map-chunk-size", Default = 50, MetaValue = "SIZE", HelpText = "Chunk size for streaming large MessagePack maps")]
-        public int MessagePackMapChunkSize { get; set; } = 50;
-
         #endregion
 
         #region CBOR Options
