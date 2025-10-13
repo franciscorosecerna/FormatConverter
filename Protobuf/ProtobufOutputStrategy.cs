@@ -3,6 +3,7 @@ using Newtonsoft.Json.Linq;
 using Google.Protobuf.WellKnownTypes;
 using Google.Protobuf;
 using System.Text;
+using System.Buffers;
 
 namespace FormatConverter.Protobuf
 {
@@ -10,285 +11,277 @@ namespace FormatConverter.Protobuf
     {
         public override string Serialize(JToken data)
         {
-            if (Config.UseStreaming)
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+
+            var processed = PreprocessToken(data);
+            var result = SerializeToken(processed);
+
+            if (Config.StrictMode)
             {
-                return string.Join("", SerializeStream([data]));
+                ValidateProtobuf(result);
             }
 
-            return SerializeRegular(data);
+            return result;
         }
 
-        public override IEnumerable<string> SerializeStream(IEnumerable<JToken> data)
+        public override void SerializeStream(IEnumerable<JToken> data, Stream output, CancellationToken cancellationToken = default)
         {
-            if (!Config.UseStreaming)
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+            if (output == null)
+                throw new ArgumentNullException(nameof(output));
+
+            var chunkSize = GetChunkSize();
+            var shouldWriteRaw = ShouldWriteRawBinary();
+
+            if (shouldWriteRaw)
             {
-                yield return Serialize(new JArray(data));
-                yield break;
+                SerializeStreamBinary(data, output, chunkSize, cancellationToken);
+            }
+            else
+            {
+                SerializeStreamText(data, output, chunkSize, cancellationToken);
+            }
+        }
+
+        private void SerializeStreamBinary(IEnumerable<JToken> data, Stream output, int chunkSize, CancellationToken cancellationToken)
+        {
+            var buffer = new List<JToken>();
+
+            foreach (var token in data)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var processed = PreprocessToken(token);
+                buffer.Add(processed);
+
+                if (buffer.Count >= chunkSize)
+                {
+                    WriteChunkToStreamBinary(buffer, output, cancellationToken);
+                    buffer.Clear();
+                }
+            }
+
+            if (buffer.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                WriteChunkToStreamBinary(buffer, output, cancellationToken);
+            }
+            output.Flush();
+        }
+
+        private void SerializeStreamText(IEnumerable<JToken> data, Stream output, int chunkSize, CancellationToken cancellationToken)
+        {
+            using var writer = new StreamWriter(output, Config.Encoding, 8192, leaveOpen: true);
+
+            var buffer = new List<JToken>();
+            bool isFirst = true;
+
+            if (!Config.Minify)
+            {
+                writer.WriteLine("[");
             }
 
             foreach (var token in data)
             {
-                foreach (var chunk in StreamToken(token))
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var processed = PreprocessToken(token);
+                buffer.Add(processed);
+
+                if (buffer.Count >= chunkSize)
                 {
-                    yield return chunk;
+                    WriteChunkToStreamText(buffer, writer, cancellationToken, ref isFirst);
+                    buffer.Clear();
                 }
             }
+
+            if (buffer.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                WriteChunkToStreamText(buffer, writer, cancellationToken, ref isFirst);
+            }
+
+            if (!Config.Minify)
+            {
+                writer.WriteLine();
+                writer.WriteLine("]");
+            }
+            output.Flush();
         }
 
-        private IEnumerable<string> StreamToken(JToken token)
+        public void SerializeStream(IEnumerable<JToken> data, string outputPath, CancellationToken cancellationToken = default)
         {
-            var processed = ProcessDataBeforeSerialization(token);
+            if (string.IsNullOrEmpty(outputPath))
+                throw new ArgumentNullException(nameof(outputPath));
 
-            if (processed.Type == JTokenType.Array)
-            {
-                return StreamArray((JArray)processed);
-            }
-            else if (processed.Type == JTokenType.Object)
-            {
-                return StreamObject((JObject)processed);
-            }
-            else
-            {
-                return StreamSingle(processed);
-            }
+            using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192);
+            SerializeStream(data, fileStream, cancellationToken);
         }
 
-        private IEnumerable<string> StreamArray(JArray array)
+        private void WriteChunkToStreamBinary(List<JToken> items, Stream output, CancellationToken ct)
         {
-            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
+            if (items.Count == 0) return;
 
-            IEnumerable<string> Iterator()
-            {
-                var buffer = new List<JToken>();
-                var currentBufferSize = 0;
-                var totalProcessed = 0;
-                var totalItems = array.Count;
-
-                foreach (var item in array)
-                {
-                    var serialized = SerializeToProtobuf(item);
-                    var itemSizeInBytes = serialized.Length;
-
-                    if (buffer.Count > 0 && currentBufferSize + itemSizeInBytes > bufferSize)
-                    {
-                        yield return SerializeBufferedItems(buffer);
-                        buffer.Clear();
-                        currentBufferSize = 0;
-
-                        if (totalItems > 0 && totalProcessed % Math.Max(1, totalItems / 10) == 0)
-                        {
-                            var progress = (double)totalProcessed / totalItems * 100;
-                            Console.WriteLine($"Serialization progress: {progress:F1}%");
-                        }
-                    }
-
-                    buffer.Add(item);
-                    currentBufferSize += itemSizeInBytes;
-                    totalProcessed++;
-                }
-
-                if (buffer.Count > 0)
-                {
-                    yield return SerializeBufferedItems(buffer);
-                }
-            }
+            const int initialBufferSize = 8192;
+            byte[]? rentedBuffer = null;
 
             try
             {
-                return Iterator();
-            }
-            catch (Exception ex)
-            {
-                if (Config.IgnoreErrors)
+                rentedBuffer = ArrayPool<byte>.Shared.Rent(initialBufferSize);
+
+                for (int i = 0; i < items.Count; i++)
                 {
-                    Console.WriteLine($"Warning: Protobuf array streaming error ignored: {ex.Message}");
-                    return [CreateErrorProtobuf(ex.Message)];
-                }
-                else
-                {
-                    throw new FormatException($"Protobuf array streaming failed: {ex.Message}", ex);
-                }
-            }
-        }
+                    ct.ThrowIfCancellationRequested();
 
-        private IEnumerable<string> StreamObject(JObject obj)
-        {
-            var properties = obj.Properties().ToList();
-            var bufferSize = Config.BufferSize > 0 ? Config.BufferSize : 4096;
-            var maxPropertiesPerChunk = Math.Max(5, bufferSize / 1024);
-
-            IEnumerable<string> Iterator()
-            {
-                var currentChunk = new JObject();
-                var processedCount = 0;
-                var totalProperties = properties.Count;
-
-                foreach (var prop in properties)
-                {
-                    currentChunk[prop.Name] = prop.Value;
-                    processedCount++;
-
-                    if (processedCount >= maxPropertiesPerChunk)
+                    try
                     {
-                        yield return SerializeRegular(currentChunk);
-                        currentChunk = new JObject();
-                        processedCount = 0;
+                        var bytes = SerializeTokenToBytes(items[i]);
 
-                        if (totalProperties > 10)
+                        if (bytes.Length <= rentedBuffer.Length)
                         {
-                            var progress = (double)processedCount / totalProperties * 100;
-                            if (progress % 10 < 1)
-                            {
-                                Console.WriteLine($"Object streaming progress: {progress:F1}%");
-                            }
+                            Buffer.BlockCopy(bytes, 0, rentedBuffer, 0, bytes.Length);
+                            output.Write(rentedBuffer, 0, bytes.Length);
+                        }
+                        else
+                        {
+                            output.Write(bytes, 0, bytes.Length);
+                        }
+                    }
+                    catch (Exception ex) when (Config.IgnoreErrors)
+                    {
+                        var errorBytes = CreateErrorOutputBytes(ex.Message, ex.GetType().Name, items[i]);
+
+                        if (errorBytes.Length <= rentedBuffer.Length)
+                        {
+                            Buffer.BlockCopy(errorBytes, 0, rentedBuffer, 0, errorBytes.Length);
+                            output.Write(rentedBuffer, 0, errorBytes.Length);
+                        }
+                        else
+                        {
+                            output.Write(errorBytes, 0, errorBytes.Length);
                         }
                     }
                 }
-
-                if (processedCount > 0)
-                {
-                    yield return SerializeRegular(currentChunk);
-                }
             }
-
-            try
+            finally
             {
-                return Iterator();
-            }
-            catch (Exception ex)
-            {
-                if (Config.IgnoreErrors)
+                if (rentedBuffer != null)
                 {
-                    Console.WriteLine($"Warning: Protobuf object streaming error ignored: {ex.Message}");
-                    return [CreateErrorProtobuf(ex.Message)];
-                }
-                else
-                {
-                    throw new FormatException($"Protobuf object streaming failed: {ex.Message}", ex);
+                    ArrayPool<byte>.Shared.Return(rentedBuffer);
                 }
             }
         }
 
-        private IEnumerable<string> StreamSingle(JToken token)
+        private void WriteChunkToStreamText(List<JToken> items, StreamWriter writer, CancellationToken ct, ref bool isFirst)
         {
-            IEnumerable<string> Iterator()
-            {
-                var serialized = SerializeToProtobuf(token);
-                yield return serialized;
-            }
-
-            try
-            {
-                return Iterator();
-            }
-            catch (Exception ex)
-            {
-                if (Config.IgnoreErrors)
-                {
-                    Console.WriteLine($"Warning: Protobuf single token serialization error ignored: {ex.Message}");
-                    return [CreateErrorProtobuf(ex.Message)];
-                }
-                else
-                {
-                    throw new FormatException($"Error serializing single token: {ex.Message}", ex);
-                }
-            }
-        }
-
-        private string SerializeBufferedItems(List<JToken> items)
-        {
-            var combinedStruct = new Struct();
+            if (items.Count == 0) return;
 
             for (int i = 0; i < items.Count; i++)
             {
+                ct.ThrowIfCancellationRequested();
+
                 try
                 {
-                    var itemStruct = ConvertJTokenToStruct(items[i]);
-                    combinedStruct.Fields[$"item_{i}"] = Value.ForStruct(itemStruct);
+                    var bytes = SerializeTokenToBytes(items[i]);
+                    var formatted = FormatOutput(bytes);
+
+                    WriteFormattedToken(writer, formatted, ref isFirst, i < items.Count - 1);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (Config.IgnoreErrors)
                 {
-                    if (Config.IgnoreErrors)
-                    {
-                        Console.WriteLine($"Warning: Protobuf buffer item serialization error ignored: {ex.Message}");
-                        continue;
-                    }
-                    else
-                    {
-                        throw;
-                    }
+                    var errorOutput = CreateErrorOutput(ex.Message, ex.GetType().Name, items[i]);
+                    WriteFormattedToken(writer, errorOutput, ref isFirst, i < items.Count - 1);
                 }
             }
-
-            var bytes = combinedStruct.ToByteArray();
-            return FormatOutput(bytes);
         }
 
-        private string SerializeRegular(JToken data)
+        private void WriteFormattedToken(StreamWriter writer, string formatted, ref bool isFirst, bool hasMore)
         {
-            var processed = ProcessDataBeforeSerialization(data);
-
-            try
+            if (!isFirst && !Config.Minify)
             {
-                return SerializeToProtobuf(processed);
+                writer.Write(",");
+                writer.WriteLine();
             }
-            catch (Exception ex)
+            else if (isFirst)
             {
-                return HandleSerializationError(ex, processed);
+                isFirst = false;
             }
-        }
 
-        private string SerializeToProtobuf(JToken data)
-        {
-            IMessage protobufMessage;
-
-            if (ShouldSerializeAsAny(data))
+            if (Config.Minify)
             {
-                protobufMessage = ConvertJTokenToAny(data);
-            }
-            else if (ShouldSerializeAsValue(data))
-            {
-                protobufMessage = ConvertJTokenToValue(data);
+                writer.Write(formatted);
+                if (hasMore)
+                    writer.Write(",");
             }
             else
             {
-                protobufMessage = ConvertJTokenToStruct(data);
+                writer.Write("  ");
+                writer.Write(formatted);
             }
-
-            var bytes = protobufMessage.ToByteArray();
-            return FormatOutput(bytes);
         }
 
-        private JToken ProcessDataBeforeSerialization(JToken data)
+        private string SerializeToken(JToken token)
         {
-            if (Config.SortKeys)
-                data = SortKeysRecursively(data);
-
-            if (Config.ArrayWrap && data.Type != JTokenType.Array)
-                return new JArray(data);
-
-            return data;
-        }
-
-        private string HandleSerializationError(Exception ex, JToken data)
-        {
-            if (Config.IgnoreErrors)
+            try
             {
-                Console.WriteLine($"Warning: Protobuf serialization error ignored: {ex.Message}");
-                return CreateErrorProtobuf(ex.Message);
+                var bytes = SerializeTokenToBytes(token);
+                return FormatOutput(bytes);
             }
-            throw new FormatException($"Protobuf serialization failed: {ex.Message}", ex);
+            catch (Exception ex) when (Config.IgnoreErrors)
+            {
+                return CreateErrorOutput(ex.Message, ex.GetType().Name, token);
+            }
         }
 
-        private string CreateErrorProtobuf(string errorMessage)
+        private byte[] SerializeTokenToBytes(JToken token)
         {
-            var errorStruct = new Struct();
-            errorStruct.Fields["error"] = Value.ForString(errorMessage);
-            errorStruct.Fields["timestamp"] = Value.ForString(DateTime.UtcNow.ToString("O"));
+            IMessage protobufMessage;
 
-            var bytes = errorStruct.ToByteArray();
-            return FormatOutput(bytes);
+            if (ShouldSerializeAsAny(token))
+            {
+                protobufMessage = ConvertJTokenToAny(token);
+            }
+            else if (ShouldSerializeAsValue(token))
+            {
+                protobufMessage = ConvertJTokenToValue(token);
+            }
+            else
+            {
+                protobufMessage = ConvertJTokenToStruct(token);
+            }
+
+            return protobufMessage.ToByteArray();
         }
+
+        private void ValidateProtobuf(string result)
+        {
+            try
+            {
+                var bytes = result.StartsWith("0x") || result.All(c => char.IsDigit(c)
+                    || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || char.IsWhiteSpace(c))
+                    ? ConvertFromHex(result)
+                    : Convert.FromBase64String(result);
+
+                var _ = Struct.Parser.ParseFrom(bytes);
+            }
+            catch when (!Config.StrictMode) { }
+        }
+
+        private static byte[] ConvertFromHex(string hex)
+        {
+            hex = hex.Replace("0x", "").Replace(" ", "").Replace("\n", "").Replace("\r", "");
+            return Convert.FromHexString(hex);
+        }
+
+        private bool ShouldWriteRawBinary()
+        {
+            var format = Config.NumberFormat?.ToLower();
+            return format == "raw" || string.IsNullOrEmpty(format);
+        }
+
+        private int GetChunkSize() => Config.ChunkSize > 0 ? Config.ChunkSize : 100;
 
         private static bool ShouldSerializeAsAny(JToken data)
         {
@@ -425,74 +418,196 @@ namespace FormatConverter.Protobuf
             return number;
         }
 
-        private string FormatDateTime(DateTime dateTime)
-        {
-            if (!string.IsNullOrEmpty(Config.DateFormat))
-            {
-                return Config.DateFormat.ToLower() switch
-                {
-                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                    "unix" => ((DateTimeOffset)dateTime).ToUnixTimeSeconds().ToString(),
-                    "rfc3339" => dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffK"),
-                    _ => dateTime.ToString(Config.DateFormat)
-                };
-            }
-
-            return dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
-        }
-
         private string FormatOutput(byte[] bytes)
         {
             return Config.NumberFormat?.ToLower() switch
             {
                 "hex" or "hexadecimal" => FormatAsHex(bytes),
                 "binary" => FormatAsBinary(bytes),
+                "raw" => FormatAsRaw(bytes),
                 _ => Convert.ToBase64String(bytes)
             };
         }
 
-        private string FormatAsHex(byte[] bytes)
+        private string FormatAsRaw(byte[] bytes)
         {
-            var hex = Convert.ToHexString(bytes);
-
-            if (Config.PrettyPrint && !Config.Minify)
+            if (Config.Encoding is UTF8Encoding)
             {
-                return string.Join(" ",
-                    Enumerable.Range(0, hex.Length / 2)
-                    .Select(i => hex.Substring(i * 2, 2)));
+                return Encoding.UTF8.GetString(bytes);
             }
 
-            return hex.ToLowerInvariant();
+            return Config.Encoding.GetString(bytes);
+        }
+
+        private string FormatAsHex(byte[] bytes)
+        {
+            const int stackAllocThreshold = 256;
+
+            if (bytes.Length <= stackAllocThreshold)
+            {
+                Span<char> hexChars = stackalloc char[bytes.Length * 2];
+                for (int i = 0; i < bytes.Length; i++)
+                {
+                    bytes[i].TryFormat(hexChars.Slice(i * 2, 2), out _, "x2");
+                }
+
+                if (Config.PrettyPrint && !Config.Minify)
+                {
+                    return FormatHexWithSpaces(hexChars);
+                }
+
+                return new string(hexChars);
+            }
+            else
+            {
+                var hex = Convert.ToHexString(bytes);
+
+                if (Config.PrettyPrint && !Config.Minify)
+                {
+                    return string.Join(" ",
+                        Enumerable.Range(0, hex.Length / 2)
+                        .Select(i => hex.Substring(i * 2, 2)));
+                }
+
+                return hex.ToLowerInvariant();
+            }
+        }
+
+        private static string FormatHexWithSpaces(ReadOnlySpan<char> hexChars)
+        {
+            char[]? buffer = null;
+            try
+            {
+                int resultLength = hexChars.Length + (hexChars.Length / 2) - 1;
+                buffer = ArrayPool<char>.Shared.Rent(resultLength);
+                Span<char> result = buffer.AsSpan(0, resultLength);
+
+                int writePos = 0;
+                for (int i = 0; i < hexChars.Length; i += 2)
+                {
+                    if (writePos > 0)
+                    {
+                        result[writePos++] = ' ';
+                    }
+                    result[writePos++] = hexChars[i];
+                    result[writePos++] = hexChars[i + 1];
+                }
+
+                return new string(result);
+            }
+            finally
+            {
+                if (buffer != null)
+                {
+                    ArrayPool<char>.Shared.Return(buffer);
+                }
+            }
         }
 
         private string FormatAsBinary(byte[] bytes)
         {
-            if (Config.PrettyPrint && !Config.Minify)
-            {
-                return string.Join(" ", bytes.Select(b => Convert.ToString(b, 2).PadLeft(8, '0')));
-            }
+            const int bitsPerByte = 8;
+            int totalChars = bytes.Length * bitsPerByte;
 
-            return string.Concat(bytes.Select(b => Convert.ToString(b, 2).PadLeft(8, '0')));
+            char[]? buffer = null;
+            try
+            {
+                if (Config.PrettyPrint && !Config.Minify)
+                {
+                    int sizeNeeded = totalChars + bytes.Length - 1;
+                    buffer = ArrayPool<char>.Shared.Rent(sizeNeeded);
+                    Span<char> span = buffer.AsSpan(0, sizeNeeded);
+
+                    int pos = 0;
+                    for (int i = 0; i < bytes.Length; i++)
+                    {
+                        if (i > 0)
+                        {
+                            span[pos++] = ' ';
+                        }
+
+                        byte b = bytes[i];
+                        for (int bit = 7; bit >= 0; bit--)
+                        {
+                            span[pos++] = ((b >> bit) & 1) == 1 ? '1' : '0';
+                        }
+                    }
+
+                    return new string(span);
+                }
+                else
+                {
+                    buffer = ArrayPool<char>.Shared.Rent(totalChars);
+                    Span<char> span = buffer.AsSpan(0, totalChars);
+
+                    int pos = 0;
+                    for (int i = 0; i < bytes.Length; i++)
+                    {
+                        byte b = bytes[i];
+                        for (int bit = 7; bit >= 0; bit--)
+                        {
+                            span[pos++] = ((b >> bit) & 1) == 1 ? '1' : '0';
+                        }
+                    }
+
+                    return new string(span);
+                }
+            }
+            finally
+            {
+                if (buffer != null)
+                {
+                    ArrayPool<char>.Shared.Return(buffer);
+                }
+            }
         }
 
-        private JToken SortKeysRecursively(JToken token)
+        private byte[] CreateErrorOutputBytes(string errorMessage, string errorType, JToken originalToken)
         {
-            return token.Type switch
+            try
             {
-                JTokenType.Object => SortJObject((JObject)token),
-                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
-                _ => token
-            };
+                var errorStruct = new Struct();
+                errorStruct.Fields["error"] = Value.ForString(errorMessage);
+                errorStruct.Fields["error_type"] = Value.ForString(errorType);
+                errorStruct.Fields["original_type"] = Value.ForString(originalToken.Type.ToString());
+                errorStruct.Fields["timestamp"] = Value.ForString(DateTime.UtcNow.ToString("O"));
+
+                return errorStruct.ToByteArray();
+            }
+            catch
+            {
+                var errorObj = new JObject
+                {
+                    ["error"] = errorMessage,
+                    ["error_type"] = errorType,
+                    ["original_type"] = originalToken.Type.ToString(),
+                    ["timestamp"] = DateTime.UtcNow.ToString("O")
+                };
+
+                return Config.Encoding.GetBytes(errorObj.ToString(Newtonsoft.Json.Formatting.None));
+            }
         }
 
-        private JObject SortJObject(JObject obj)
+        private string CreateErrorOutput(string errorMessage, string errorType, JToken originalToken)
         {
-            var sorted = new JObject();
-            foreach (var property in obj.Properties().OrderBy(p => p.Name))
+            try
             {
-                sorted[property.Name] = SortKeysRecursively(property.Value);
+                var errorBytes = CreateErrorOutputBytes(errorMessage, errorType, originalToken);
+                return FormatOutput(errorBytes);
             }
-            return sorted;
+            catch
+            {
+                var errorObj = new JObject
+                {
+                    ["error"] = errorMessage,
+                    ["error_type"] = errorType,
+                    ["original_type"] = originalToken.Type.ToString(),
+                    ["timestamp"] = DateTime.UtcNow.ToString("O")
+                };
+
+                var errorBytes = Config.Encoding.GetBytes(errorObj.ToString(Newtonsoft.Json.Formatting.None));
+                return Convert.ToBase64String(errorBytes);
+            }
         }
     }
 }
