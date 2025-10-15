@@ -1,4 +1,5 @@
-﻿using FormatConverter.Interfaces;
+﻿using FormatConverter.Cbor.CborReader;
+using FormatConverter.Interfaces;
 using Newtonsoft.Json.Linq;
 using PeterO.Cbor;
 using System.Buffers;

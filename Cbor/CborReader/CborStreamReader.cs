@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace FormatConverter.Cbor
+namespace FormatConverter.Cbor.CborReader
 {
     /// <summary>
     /// Low-level CBOR parser that implements RFC 8949 (CBOR specification).
@@ -87,7 +87,7 @@ namespace FormatConverter.Cbor
 
             position++;
 
-            int majorType = (initialByte >> 5) & MAJOR_TYPE_MASK;
+            int majorType = initialByte >> 5 & MAJOR_TYPE_MASK;
             int additionalInfo = initialByte & ADDITIONAL_INFO_MASK;
 
             long argument = ReadArgument(buffer, length, ref position, additionalInfo);
@@ -167,16 +167,16 @@ namespace FormatConverter.Cbor
 
         private static ulong ReadUInt16BigEndian(byte[] buffer, ref int position)
         {
-            ulong value = ((ulong)buffer[position] << 8) | buffer[position + 1];
+            ulong value = (ulong)buffer[position] << 8 | buffer[position + 1];
             position += 2;
             return value;
         }
 
         private static ulong ReadUInt32BigEndian(byte[] buffer, ref int position)
         {
-            ulong value = ((ulong)buffer[position] << 24) |
-                         ((ulong)buffer[position + 1] << 16) |
-                         ((ulong)buffer[position + 2] << 8) |
+            ulong value = (ulong)buffer[position] << 24 |
+                         (ulong)buffer[position + 1] << 16 |
+                         (ulong)buffer[position + 2] << 8 |
                          buffer[position + 3];
             position += 4;
             return value;
@@ -187,7 +187,7 @@ namespace FormatConverter.Cbor
             ulong value = 0;
             for (int i = 0; i < 8; i++)
             {
-                value = (value << 8) | buffer[position++];
+                value = value << 8 | buffer[position++];
             }
             return value;
         }

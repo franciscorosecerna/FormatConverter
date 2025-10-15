@@ -1,10 +1,9 @@
 ﻿using FormatConverter.Interfaces;
+using FormatConverter.Yaml.Parser;
 using Newtonsoft.Json.Linq;
-using System.Text;
 using YamlDotNet.Core;
 using YamlDotNet.Core.Events;
 using YamlDotNet.Serialization;
-using YamlDotNet.Serialization.NamingConventions;
 
 namespace FormatConverter.Yaml
 {
@@ -146,7 +145,7 @@ namespace FormatConverter.Yaml
 
         private IParser CreateParser(StreamReader streamReader)
         {
-            var baseParser = new Parser(streamReader);
+            var baseParser = new YamlDotNet.Core.Parser(streamReader);
 
             if (Config.MaxDepth.HasValue)
             {

@@ -1,7 +1,7 @@
 ﻿using YamlDotNet.Core;
 using YamlDotNet.Core.Events;
 
-namespace FormatConverter.Yaml
+namespace FormatConverter.Yaml.Parser
 {
     public class MaxDepthValidatingParser : IParser
     {
