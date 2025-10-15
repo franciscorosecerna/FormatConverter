@@ -9,6 +9,32 @@ namespace FormatConverter.Cbor
     {
         private const long INDEFINITE_LENGTH = -2;
         private const long INSUFFICIENT_DATA = -1;
+        private const byte BREAK_STOP_CODE = 0xFF;
+        private const int MAJOR_TYPE_MASK = 0x07;
+        private const int ADDITIONAL_INFO_MASK = 0x1F;
+        private const int DEFAULT_MAX_DEPTH = 100;
+
+        private readonly bool _allowIndefiniteLength;
+        private readonly bool _allowMultipleContent;
+        private readonly int _maxDepth;
+
+        /// <summary>
+        /// Initializes a new instance of the CborStreamReader class.
+        /// </summary>
+        /// <param name="allowIndefiniteLength">Whether to allow indefinite-length items.</param>
+        /// <param name="allowMultipleContent">Whether to allow multiple root-level CBOR objects.</param>
+        /// <param name="maxDepth">Maximum nesting depth allowed. Default is 100.</param>
+        public CborStreamReader(bool allowIndefiniteLength = true, bool allowMultipleContent = false, int maxDepth = DEFAULT_MAX_DEPTH)
+        {
+            if (maxDepth <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxDepth), "Maximum depth must be greater than zero.");
+            }
+
+            _allowIndefiniteLength = allowIndefiniteLength;
+            _allowMultipleContent = allowMultipleContent;
+            _maxDepth = maxDepth;
+        }
 
         /// <summary>
         /// Calculates the size in bytes of a complete CBOR object in the buffer.
@@ -16,30 +42,53 @@ namespace FormatConverter.Cbor
         /// <returns>
         /// Number of bytes the object occupies, or -1 if there is not enough data.
         /// </returns>
-        public static int CalculateObjectSize(byte[] buffer, int length)
+        public int CalculateObjectSize(byte[] buffer, int length)
         {
+            if (buffer == null)
+            {
+                throw new ArgumentNullException(nameof(buffer));
+            }
+
             if (length == 0) return -1;
+            if (length > buffer.Length)
+            {
+                throw new ArgumentException("Length exceeds buffer size.", nameof(length));
+            }
 
             int position = 0;
-            return CalculateItemSize(buffer, length, ref position);
+            int depth = 0;
+            int objectSize = CalculateItemSize(buffer, length, ref position, ref depth);
+
+            if (objectSize > 0 && !_allowMultipleContent && position < length)
+            {
+                throw new FormatException("Multiple root-level CBOR objects detected, but allowMultipleContent is false.");
+            }
+
+            return objectSize;
         }
 
-        private static int CalculateItemSize(byte[] buffer, int length, ref int position)
+        private int CalculateItemSize(byte[] buffer, int length, ref int position, ref int depth)
         {
             if (position >= length) return -1;
+
+            depth++;
+            if (depth > _maxDepth)
+            {
+                throw new FormatException($"Maximum nesting depth of {_maxDepth} exceeded.");
+            }
 
             int startPosition = position;
             byte initialByte = buffer[position];
 
-            if (initialByte == 0xFF)
+            if (initialByte == BREAK_STOP_CODE)
             {
                 throw new FormatException("Unexpected CBOR break (0xFF) outside indefinite-length context.");
             }
 
             position++;
 
-            int majorType = (initialByte >> 5) & 0x07;
-            int additionalInfo = initialByte & 0x1F;
+            int majorType = (initialByte >> 5) & MAJOR_TYPE_MASK;
+            int additionalInfo = initialByte & ADDITIONAL_INFO_MASK;
 
             long argument = ReadArgument(buffer, length, ref position, additionalInfo);
 
@@ -48,16 +97,24 @@ namespace FormatConverter.Cbor
                 return -1;
             }
 
-            return majorType switch
+            if (argument == INDEFINITE_LENGTH && !_allowIndefiniteLength)
+            {
+                throw new FormatException("Indefinite-length items are not allowed.");
+            }
+
+            int result = majorType switch
             {
                 0 or 1 => position - startPosition,
-                2 or 3 => CalculateStringSize(buffer, length, ref position, argument, startPosition),
-                4 => CalculateArraySize(buffer, length, ref position, argument, startPosition),
-                5 => CalculateMapSize(buffer, length, ref position, argument, startPosition),
-                6 => CalculateTaggedSize(buffer, length, ref position, startPosition),
+                2 or 3 => CalculateStringSize(buffer, length, ref position, argument, startPosition, ref depth),
+                4 => CalculateArraySize(buffer, length, ref position, argument, startPosition, ref depth),
+                5 => CalculateMapSize(buffer, length, ref position, argument, startPosition, ref depth),
+                6 => CalculateTaggedSize(buffer, length, ref position, startPosition, ref depth),
                 7 => CalculateSimpleOrFloatSize(buffer, length, ref position, additionalInfo, startPosition),
                 _ => throw new FormatException($"Unknown CBOR major type: {majorType}"),
             };
+
+            depth--;
+            return result;
         }
 
         private static long ReadArgument(byte[] buffer, int length, ref int position, int additionalInfo)
@@ -135,12 +192,12 @@ namespace FormatConverter.Cbor
             return value;
         }
 
-        private static int CalculateStringSize(byte[] buffer, int length, ref int position,
-            long argument, int startPosition)
+        private int CalculateStringSize(byte[] buffer, int length, ref int position,
+            long argument, int startPosition, ref int depth)
         {
             if (argument == INDEFINITE_LENGTH)
             {
-                return CalculateIndefiniteLengthStringSize(buffer, length, ref position, startPosition);
+                return CalculateIndefiniteLengthStringSize(buffer, length, ref position, startPosition, ref depth);
             }
             else
             {
@@ -150,20 +207,20 @@ namespace FormatConverter.Cbor
             }
         }
 
-        private static int CalculateArraySize(byte[] buffer, int length, ref int position,
-            long argument, int startPosition)
+        private int CalculateArraySize(byte[] buffer, int length, ref int position,
+            long argument, int startPosition, ref int depth)
         {
             if (argument == INDEFINITE_LENGTH)
             {
                 while (position < length)
                 {
-                    if (buffer[position] == 0xFF)
+                    if (buffer[position] == BREAK_STOP_CODE)
                     {
                         position++;
                         return position - startPosition;
                     }
 
-                    int itemSize = CalculateItemSize(buffer, length, ref position);
+                    int itemSize = CalculateItemSize(buffer, length, ref position, ref depth);
                     if (itemSize < 0) return -1;
                 }
 
@@ -173,30 +230,30 @@ namespace FormatConverter.Cbor
             {
                 for (long i = 0; i < argument; i++)
                 {
-                    int itemSize = CalculateItemSize(buffer, length, ref position);
+                    int itemSize = CalculateItemSize(buffer, length, ref position, ref depth);
                     if (itemSize < 0) return -1;
                 }
                 return position - startPosition;
             }
         }
 
-        private static int CalculateMapSize(byte[] buffer, int length, ref int position,
-            long argument, int startPosition)
+        private int CalculateMapSize(byte[] buffer, int length, ref int position,
+            long argument, int startPosition, ref int depth)
         {
             if (argument == INDEFINITE_LENGTH)
             {
                 while (position < length)
                 {
-                    if (buffer[position] == 0xFF)
+                    if (buffer[position] == BREAK_STOP_CODE)
                     {
                         position++;
                         return position - startPosition;
                     }
 
-                    int keySize = CalculateItemSize(buffer, length, ref position);
+                    int keySize = CalculateItemSize(buffer, length, ref position, ref depth);
                     if (keySize < 0) return -1;
 
-                    int valueSize = CalculateItemSize(buffer, length, ref position);
+                    int valueSize = CalculateItemSize(buffer, length, ref position, ref depth);
                     if (valueSize < 0) return -1;
                 }
 
@@ -206,19 +263,19 @@ namespace FormatConverter.Cbor
             {
                 for (long i = 0; i < argument; i++)
                 {
-                    int keySize = CalculateItemSize(buffer, length, ref position);
+                    int keySize = CalculateItemSize(buffer, length, ref position, ref depth);
                     if (keySize < 0) return -1;
 
-                    int valueSize = CalculateItemSize(buffer, length, ref position);
+                    int valueSize = CalculateItemSize(buffer, length, ref position, ref depth);
                     if (valueSize < 0) return -1;
                 }
                 return position - startPosition;
             }
         }
 
-        private static int CalculateTaggedSize(byte[] buffer, int length, ref int position, int startPosition)
+        private int CalculateTaggedSize(byte[] buffer, int length, ref int position, int startPosition, ref int depth)
         {
-            int contentSize = CalculateItemSize(buffer, length, ref position);
+            int contentSize = CalculateItemSize(buffer, length, ref position, ref depth);
             if (contentSize < 0) return -1;
             return position - startPosition;
         }
@@ -232,6 +289,8 @@ namespace FormatConverter.Cbor
             }
             else if (additionalInfo == 24)
             {
+                if (position >= length) return -1;
+                position++;
                 return position - startPosition;
             }
             else if (additionalInfo == 25)
@@ -260,18 +319,18 @@ namespace FormatConverter.Cbor
             return position - startPosition;
         }
 
-        private static int CalculateIndefiniteLengthStringSize(byte[] buffer, int length,
-            ref int position, int startPosition)
+        private int CalculateIndefiniteLengthStringSize(byte[] buffer, int length,
+            ref int position, int startPosition, ref int depth)
         {
             while (position < length)
             {
-                if (buffer[position] == 0xFF)
+                if (buffer[position] == BREAK_STOP_CODE)
                 {
                     position++;
                     return position - startPosition;
                 }
 
-                int chunkSize = CalculateItemSize(buffer, length, ref position);
+                int chunkSize = CalculateItemSize(buffer, length, ref position, ref depth);
                 if (chunkSize < 0) return -1;
             }
 

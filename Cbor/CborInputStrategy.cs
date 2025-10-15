@@ -153,7 +153,10 @@ namespace FormatConverter.Cbor
 
             try
             {
-                var bytesNeeded = CborStreamReader.CalculateObjectSize(buffer, length);
+                var cborStream = new CborStreamReader(Config.CborAllowIndefiniteLength,
+                    Config.CborAllowMultipleContent,
+                    Config.MaxDepth!.Value);
+                var bytesNeeded = cborStream.CalculateObjectSize(buffer, length);
 
                 if (bytesNeeded < 0)
                 {
