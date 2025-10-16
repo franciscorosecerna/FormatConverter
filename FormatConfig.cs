@@ -1,4 +1,5 @@
-﻿using Google.Protobuf.WellKnownTypes;
+﻿using FormatConverter.Bxml.BxmlWriter;
+using Google.Protobuf.WellKnownTypes;
 using System.Text;
 
 namespace FormatConverter
@@ -53,6 +54,10 @@ namespace FormatConverter
         public bool CborPreserveTags { get; set; }
         public bool CborUseDateTimeTags { get; set; }
         public bool CborUseBigNumTags { get; set; }
+
+        //bxml specific
+        public Endianness Endianness { get; set; }
+        public bool CompressArrays { get; set; }
 
         //other
         public string? Compression { get; set; }
@@ -119,6 +124,14 @@ namespace FormatConverter
                 CborUseDateTimeTags = options.CborUseDateTimeTags,
                 CborUseBigNumTags = options.CborUseBigNumTags,
 
+                //BXML
+                CompressArrays = options.CompressArrays,
+                Endianness = options.Endianness.ToLowerInvariant() switch
+                {
+                    "bigendian" => Endianness.BigEndian,
+                    _ => Endianness.LittleEndian
+                },
+
                 //Other
                 Compression = options.Compression,
                 SchemaFile = options.SchemaFile,
@@ -131,7 +144,7 @@ namespace FormatConverter
                 Timezone = options.Timezone,
                 ArrayWrap = options.ArrayWrap,
                 FlattenArrays = options.FlattenArrays,
-                MaxDepth = options.MaxDepth
+                MaxDepth = options.MaxDepth ?? 100,
             };
 
             try

@@ -34,9 +34,6 @@ namespace FormatConverter.Toml
 
                 var token = ConvertToJToken(model);
 
-                if (Config.NoMetadata)
-                    RemoveMetadataProperties(token);
-
                 return token;
             }
             catch (Exception ex) when (ex is not FormatException)
@@ -135,7 +132,6 @@ namespace FormatConverter.Toml
                     cancellationToken.ThrowIfCancellationRequested();
 
                     var token = ConvertToJToken(value);
-                    token = ApplyConfiguration(token);
 
                     if (Config.MaxDepth > 0)
                     {
@@ -148,7 +144,6 @@ namespace FormatConverter.Toml
             else
             {
                 var token = ConvertToJToken(model);
-                token = ApplyConfiguration(token);
 
                 if (Config.MaxDepth > 0)
                 {
@@ -157,14 +152,6 @@ namespace FormatConverter.Toml
 
                 yield return token;
             }
-        }
-
-        private JToken ApplyConfiguration(JToken token)
-        {
-            if (Config.NoMetadata)
-                RemoveMetadataProperties(token);
-
-            return token;
         }
 
         private JToken ConvertToJToken(object? value)
@@ -257,28 +244,6 @@ namespace FormatConverter.Toml
                     : input,
                 ["timestamp"] = DateTime.UtcNow.ToString("o")
             };
-        }
-
-        private static void RemoveMetadataProperties(JToken token)
-        {
-            if (token is JObject obj)
-            {
-                var toRemove = obj.Properties()
-                    .Where(p => p.Name.StartsWith("_"))
-                    .Select(p => p.Name)
-                    .ToList();
-
-                foreach (var key in toRemove)
-                    obj.Remove(key);
-
-                foreach (var prop in obj.Properties())
-                    RemoveMetadataProperties(prop.Value);
-            }
-            else if (token is JArray arr)
-            {
-                foreach (var item in arr)
-                    RemoveMetadataProperties(item);
-            }
         }
     }
 }

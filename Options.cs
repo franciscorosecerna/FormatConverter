@@ -157,6 +157,16 @@ namespace FormatConverter
 
         #endregion
 
+        #region BXML Options
+
+        [Option("bxml-endian", Default = "littleendian", 
+            HelpText = "Use 'littleendian' for Intel/x86 systems (default) or 'bigendian' for network order and some RISC architectures.")]
+        public string Endianness { get; set; } = "littleendian";
+
+        [Option("bxml-compressArrays", Default = true, HelpText = "Enables compression for homogeneous arrays to reduce output size")]
+        public bool CompressArrays { get; set; } = true;
+        #endregion
+
         #region Compression Options
 
         [Option("compress", MetaValue = "TYPE", HelpText = "Compress output using specified algorithm (gzip, deflate, brotli)")]

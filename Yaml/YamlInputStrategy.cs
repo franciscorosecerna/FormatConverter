@@ -1,5 +1,5 @@
 ﻿using FormatConverter.Interfaces;
-using FormatConverter.Yaml.Parser;
+using FormatConverter.Yaml.YamlParser;
 using Newtonsoft.Json.Linq;
 using YamlDotNet.Core;
 using YamlDotNet.Core.Events;
