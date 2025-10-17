@@ -36,7 +36,7 @@ namespace FormatConverter.Bxml.BxmlReader
         public BxmlStreamReader(Stream stream, bool strictMode = false, int maxDepth = 100)
         {
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
-            _reader = new BinaryReader(_stream, Encoding.UTF8, leaveOpen: true);
+            _reader = new BinaryReader(_stream, new UTF8Encoding(false), leaveOpen: true);
             _strictMode = strictMode;
             _maxDepth = maxDepth;
         }
@@ -201,6 +201,9 @@ namespace FormatConverter.Bxml.BxmlReader
                 5 => ReadInt64(),
                 6 => ReadSingle(),
                 7 => ReadDouble(),
+                8 => _reader.ReadBoolean(),
+                9 => ReadDateTime(),
+                10 => ReadBytes(),
                 _ => throw new FormatException($"Unknown value type: {valueType}")
             };
         }
@@ -208,7 +211,10 @@ namespace FormatConverter.Bxml.BxmlReader
         private void ReadCompressedArray(BxmlElement parent, ushort count, int depth)
         {
             byte typeNameIndex = _reader.ReadByte();
-            string typeName = _stringTable![typeNameIndex];
+            if (typeNameIndex >= _stringTable!.Length)
+                throw new FormatException($"Type name index {typeNameIndex} out of bounds");
+
+            string typeName = _stringTable[typeNameIndex];
 
             for (int i = 0; i < count; i++)
             {
@@ -223,16 +229,16 @@ namespace FormatConverter.Bxml.BxmlReader
                         childElement.TextIndex = (uint)_reader.ReadUInt16();
                         break;
                     case "integer":
-                        ReadInt64();
+                        childElement.Value = ReadInt64();
                         break;
                     case "float":
-                        ReadDouble();
+                        childElement.Value = ReadDouble();
                         break;
                     case "bool":
-                        _reader.ReadBoolean();
+                        childElement.Value = _reader.ReadBoolean();
                         break;
                     default:
-                        _reader.ReadUInt16();
+                        childElement.TextIndex = (uint)_reader.ReadUInt16();
                         break;
                 }
 
@@ -288,6 +294,18 @@ namespace FormatConverter.Bxml.BxmlReader
             if (_bigEndian && BitConverter.IsLittleEndian)
                 Array.Reverse(bytes);
             return BitConverter.ToDouble(bytes, 0);
+        }
+
+        private DateTime ReadDateTime()
+        {
+            long binary = ReadInt64();
+            return DateTime.FromBinary(binary);
+        }
+
+        private byte[] ReadBytes()
+        {
+            ushort length = _reader.ReadUInt16();
+            return _reader.ReadBytes(length);
         }
 
         public void Dispose()

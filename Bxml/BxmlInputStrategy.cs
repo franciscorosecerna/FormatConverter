@@ -62,42 +62,56 @@ namespace FormatConverter.Bxml
 
             string[] stringTable = reader.GetStringTable();
 
-            BxmlElement root;
+            BxmlElement? root = null;
+            Exception? error = null;
+
             try
             {
                 root = reader.ReadDocument();
             }
             catch (Exception ex)
             {
+                error = ex;
+            }
+
+            if (error != null)
+            {
                 if (Config.IgnoreErrors)
                 {
-                    Console.Error.WriteLine($"\nWarning: Error reading BXML document: {ex.Message}");
-                    yield return CreateErrorToken(ex, $"File: {path}");
+                    Console.Error.WriteLine($"\nWarning: Error reading BXML document: {error.Message}");
+                    yield return CreateErrorToken(error, $"File: {path}");
                     yield break;
                 }
-                throw new FormatException($"Invalid BXML document: {ex.Message}", ex);
+                throw new FormatException($"Invalid BXML document: {error.Message}", error);
             }
 
             if (showProgress)
-                Console.Error.WriteLine("\rConverting to JSON...");
+                Console.Error.Write("\rConverting to JSON...");
 
-            JToken json;
+            JToken? json = null;
+            error = null;
+
             try
             {
-                json = ConvertBxmlElementToJson(root, stringTable);
+                json = ConvertBxmlElementToJson(root!, stringTable);
             }
             catch (Exception ex)
             {
-                if (Config.IgnoreErrors)
-                {
-                    Console.Error.WriteLine($"\nWarning: Error converting BXML to JSON: {ex.Message}");
-                    yield return CreateErrorToken(ex, $"File: {path}");
-                    yield break;
-                }
-                throw new FormatException($"Error converting BXML to JSON: {ex.Message}", ex);
+                error = ex;
             }
 
-            yield return json;
+            if (error != null)
+            {
+                if (Config.IgnoreErrors)
+                {
+                    Console.Error.WriteLine($"\nWarning: Error converting BXML to JSON: {error.Message}");
+                    yield return CreateErrorToken(error, $"File: {path}");
+                    yield break;
+                }
+                throw new FormatException($"Error converting BXML to JSON: {error.Message}", error);
+            }
+
+            yield return json!;
 
             if (showProgress)
                 Console.Error.WriteLine("Completed");

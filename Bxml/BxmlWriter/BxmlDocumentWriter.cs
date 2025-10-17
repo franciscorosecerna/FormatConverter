@@ -12,7 +12,7 @@ namespace FormatConverter.Bxml.BxmlWriter
 
         public BxmlDocumentWriter(Stream stream, BxmlWriteOptions? options = null)
         {
-            _writer = new BinaryWriter(stream, options?.Encoding ?? Encoding.UTF8,
+            _writer = new BinaryWriter(stream, options?.Encoding ?? new UTF8Encoding(false),
                 options?.LeaveOpen ?? false);
             _options = options ?? BxmlWriteOptions.Default;
         }
@@ -146,17 +146,17 @@ namespace FormatConverter.Bxml.BxmlWriter
                     break;
 
                 case JTokenType.Boolean:
-                    _writer.Write((byte)1);
+                    _writer.Write((byte)8);
                     _writer.Write(token.Value<bool>());
                     break;
 
                 case JTokenType.Date:
-                    _writer.Write((byte)1);
+                    _writer.Write((byte)9);
                     WriteDateTimeValue(token.Value<DateTime>());
                     break;
 
                 case JTokenType.Bytes:
-                    _writer.Write((byte)1);
+                    _writer.Write((byte)10);
                     WriteBytesValue(token.Value<byte[]>()!);
                     break;
 
@@ -237,7 +237,7 @@ namespace FormatConverter.Bxml.BxmlWriter
             }
             else
             {
-                _writer.Write((ushort)0); // No children
+                _writer.Write((ushort)0);
             }
         }
 
@@ -281,10 +281,15 @@ namespace FormatConverter.Bxml.BxmlWriter
             if (arr.Count == 0) return true;
 
             var firstType = arr[0].Type;
+
+            if (firstType == JTokenType.Object || firstType == JTokenType.Array)
+                return false;
+
             for (int i = 1; i < arr.Count; i++)
             {
                 if (arr[i].Type != firstType) return false;
             }
+
             return true;
         }
 
@@ -349,6 +354,7 @@ namespace FormatConverter.Bxml.BxmlWriter
         {
             if (!_disposed)
             {
+                _writer?.Flush();
                 _writer?.Dispose();
                 _disposed = true;
             }

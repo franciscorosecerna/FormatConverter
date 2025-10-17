@@ -7,10 +7,11 @@
 
         /// <summary>
         /// The value of this element. Can be:
-        /// - string (from string table)
         /// - long (integers of all sizes)
         /// - double (floats of all sizes)
         /// - bool
+        /// - DateTime
+        /// - byte[]
         /// - null (for objects, arrays, or null values)
         /// </summary>
         public object? Value { get; set; }
@@ -18,14 +19,9 @@
         public List<BxmlElement> Children { get; set; } = [];
 
         /// <summary>
-        /// Helper property for backward compatibility.
-        /// Returns the string table index if Value is a string reference.
+        /// Index in the string table if this element's value is a string.
+        /// Mutually exclusive with Value.
         /// </summary>
-        [Obsolete("Use Value property instead")]
-        public uint? TextIndex
-        {
-            get => Value is string ? null : null; // Legacy support
-            set { } // Ignore sets for compatibility
-        }
+        public uint? TextIndex { get; set; }
     }
 }
