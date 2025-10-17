@@ -210,11 +210,14 @@ namespace FormatConverter.Bxml.BxmlReader
 
         private void ReadCompressedArray(BxmlElement parent, ushort count, int depth)
         {
-            byte typeNameIndex = _reader.ReadByte();
+            ushort typeNameIndex = _reader.ReadUInt16();
             if (typeNameIndex >= _stringTable!.Length)
                 throw new FormatException($"Type name index {typeNameIndex} out of bounds");
 
             string typeName = _stringTable[typeNameIndex];
+
+            uint typeAttrIndex = (uint)GetStringIndex("type");
+            uint typeValueIndex = typeNameIndex;
 
             for (int i = 0; i < count; i++)
             {
@@ -222,6 +225,8 @@ namespace FormatConverter.Bxml.BxmlReader
                 {
                     NameIndex = (uint)GetStringIndex("item")
                 };
+
+                childElement.Attributes[typeAttrIndex] = typeValueIndex;
 
                 switch (typeName)
                 {

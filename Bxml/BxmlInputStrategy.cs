@@ -1,7 +1,6 @@
 ﻿using FormatConverter.Bxml.BxmlReader;
 using FormatConverter.Interfaces;
 using Newtonsoft.Json.Linq;
-using System.Text;
 
 namespace FormatConverter.Bxml
 {
@@ -187,7 +186,7 @@ namespace FormatConverter.Bxml
 
         private JToken ParseBxmlData(byte[] bxmlData)
         {
-            if (bxmlData.Length < 8) // BXML + version + flags + reserved = 8 bytes minimum
+            if (bxmlData.Length < 8)
                 throw new FormatException($"BXML data too short: {bxmlData.Length} bytes (minimum 8 required)");
 
             using var buffer = new MemoryStream(bxmlData);
@@ -207,12 +206,9 @@ namespace FormatConverter.Bxml
         private static JToken ConvertBxmlElementToJson(BxmlElement element, string[] stringTable)
         {
             string elementName = GetStringFromTable(element.NameIndex, stringTable, "unknown");
-            string type = GetElementType(element, stringTable);
 
-            // Handle root element specially
             if (elementName == "root" || elementName == "Root")
             {
-                // If root has children, merge them into a single object
                 if (element.Children.Count > 0)
                 {
                     var rootContent = new JObject();
@@ -224,10 +220,9 @@ namespace FormatConverter.Bxml
                     return rootContent;
                 }
 
-                // If root has a value, return it directly
-                if (element.Value != null)
+                if (element.Value != null || element.TextIndex.HasValue)
                 {
-                    return ConvertValueToJToken(element.Value, type);
+                    return ConvertElementToJsonValue(element, stringTable);
                 }
 
                 return new JObject();
@@ -266,45 +261,64 @@ namespace FormatConverter.Bxml
                 case "boolean":
                     if (element.Value is bool b)
                         return new JValue(b);
-                    if (element.Value is string s)
-                        return new JValue(bool.TryParse(s, out var bv) && bv);
+                    if (element.TextIndex.HasValue)
+                    {
+                        string strVal = GetStringFromTable(element.TextIndex.Value, stringTable, "false");
+                        return new JValue(bool.TryParse(strVal, out var bv) && bv);
+                    }
                     return new JValue(false);
 
                 case "integer":
                 case "int":
                 case "long":
-                    if (element.Value is long l)
-                        return new JValue(l);
-                    if (element.Value is string ss)
-                        return new JValue(long.TryParse(ss, out var lv) ? lv : 0L);
+                    if (element.Value != null)
+                    {
+                        return element.Value switch
+                        {
+                            long l => new JValue(l),
+                            int i => new JValue(i),
+                            short s => new JValue(s),
+                            byte by => new JValue(by),
+                            _ => new JValue(Convert.ToInt64(element.Value))
+                        };
+                    }
+                    if (element.TextIndex.HasValue)
+                    {
+                        string strVal = GetStringFromTable(element.TextIndex.Value, stringTable, "0");
+                        return new JValue(long.TryParse(strVal, out var lv) ? lv : 0L);
+                    }
                     return new JValue(0L);
 
                 case "float":
                 case "double":
-                    if (element.Value is double d)
-                        return new JValue(d);
-                    if (element.Value is string sss)
-                        return new JValue(double.TryParse(sss, out var dv) ? dv : 0.0);
+                    if (element.Value != null)
+                    {
+                        return element.Value switch
+                        {
+                            double d => new JValue(d),
+                            float f => new JValue(f),
+                            _ => new JValue(Convert.ToDouble(element.Value))
+                        };
+                    }
+                    if (element.TextIndex.HasValue)
+                    {
+                        string strVal = GetStringFromTable(element.TextIndex.Value, stringTable, "0.0");
+                        return new JValue(double.TryParse(strVal, out var dv) ? dv : 0.0);
+                    }
                     return new JValue(0.0);
 
                 case "string":
                 default:
-                    if (element.Value == null)
-                        return new JValue("");
-                    return new JValue(element.Value.ToString());
+                    if (element.TextIndex.HasValue)
+                    {
+                        return new JValue(GetStringFromTable(element.TextIndex.Value, stringTable, ""));
+                    }
+                    if (element.Value != null)
+                    {
+                        return new JValue(element.Value.ToString());
+                    }
+                    return new JValue("");
             }
-        }
-
-        private static JToken ConvertValueToJToken(object value, string type)
-        {
-            return type switch
-            {
-                "null" => JValue.CreateNull(),
-                "bool" or "boolean" => value is bool b ? new JValue(b) : new JValue(false),
-                "integer" or "int" or "long" => value is long l ? new JValue(l) : new JValue(0L),
-                "float" or "double" => value is double d ? new JValue(d) : new JValue(0.0),
-                _ => new JValue(value.ToString())
-            };
         }
 
         private static string GetElementType(BxmlElement element, string[] stringTable)

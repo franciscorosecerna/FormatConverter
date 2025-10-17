@@ -246,7 +246,7 @@ namespace FormatConverter.Bxml.BxmlWriter
             _writer.Write((ushort)(arr.Count | 0x8000));
 
             var firstItem = arr[0];
-            _writer.Write((byte)stringTable.GetOrAdd(GetBxmlType(firstItem)));
+            _writer.Write((ushort)stringTable.GetOrAdd(GetBxmlType(firstItem)));
 
             foreach (var item in arr)
             {
