@@ -257,11 +257,7 @@ namespace FormatConverter.Xml
 
         private void ConvertJObjectToXElement(JObject jObject, XElement parent)
         {
-            var properties = Config.SortKeys
-                ? jObject.Properties().OrderBy(p => p.Name)
-                : jObject.Properties();
-
-            foreach (var property in properties)
+            foreach (var property in jObject.Properties())
             {
                 if (property.Name.StartsWith("@"))
                 {
@@ -281,6 +277,26 @@ namespace FormatConverter.Xml
                 else
                 {
                     var element = new XElement(_currentNamespace + SanitizeElementName(property.Name));
+
+                    if (property.Value.Type == JTokenType.Array)
+                    {
+                        element.SetAttributeValue("type", "array");
+
+                        var arrayType = DetectArrayType((JArray)property.Value);
+                        if (!string.IsNullOrEmpty(arrayType))
+                        {
+                            element.SetAttributeValue("itemType", arrayType);
+                        }
+                    }
+                    else if (IsSimpleValue(property.Value))
+                    {
+                        var valueType = GetValueType(property.Value);
+                        if (!string.IsNullOrEmpty(valueType))
+                        {
+                            element.SetAttributeValue("type", valueType);
+                        }
+                    }
+
                     ConvertJTokenToXElement(property.Value, element);
                     parent.Add(element);
                 }
@@ -292,6 +308,16 @@ namespace FormatConverter.Xml
             foreach (var item in jArray)
             {
                 var itemElement = new XElement(_currentNamespace + "item");
+
+                if (IsSimpleValue(item))
+                {
+                    var itemType = GetValueType(item);
+                    if (!string.IsNullOrEmpty(itemType))
+                    {
+                        itemElement.SetAttributeValue("type", itemType);
+                    }
+                }
+
                 ConvertJTokenToXElement(item, itemElement);
                 parent.Add(itemElement);
             }
@@ -311,6 +337,42 @@ namespace FormatConverter.Xml
             {
                 parent.Value = textValue;
             }
+        }
+
+        private static string? DetectArrayType(JArray array)
+        {
+            if (array.Count == 0) return "empty";
+
+            var firstType = array[0].Type;
+            bool isHomogeneous = array.All(item => item.Type == firstType);
+
+            if (!isHomogeneous) return "mixed";
+
+            return firstType switch
+            {
+                JTokenType.String => "string",
+                JTokenType.Integer => "integer",
+                JTokenType.Float => "number",
+                JTokenType.Boolean => "boolean",
+                JTokenType.Object => "object",
+                JTokenType.Array => "array",
+                JTokenType.Null => "null",
+                _ => null
+            };
+        }
+
+        private static string? GetValueType(JToken token)
+        {
+            return token.Type switch
+            {
+                JTokenType.String => "string",
+                JTokenType.Integer => "integer",
+                JTokenType.Float => "number",
+                JTokenType.Boolean => "boolean",
+                JTokenType.Null => "null",
+                JTokenType.Date => "date",
+                _ => null
+            };
         }
 
         private static bool IsSimpleValue(JToken token)

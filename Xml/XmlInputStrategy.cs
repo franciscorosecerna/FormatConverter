@@ -1,5 +1,6 @@
 ﻿using FormatConverter.Interfaces;
 using Newtonsoft.Json.Linq;
+using System.Globalization;
 using System.Text;
 using System.Xml;
 using System.Xml.Linq;
@@ -158,11 +159,27 @@ namespace FormatConverter.Xml
             throw new FormatException($"Invalid XML: {ex.Message}", ex);
         }
 
-        private JObject ConvertXElementToJToken(XElement element)
+        private JToken ConvertXElementToJToken(XElement element)
         {
+            var typeAttr = element.Attribute("type")?.Value;
+            var itemTypeAttr = element.Attribute("itemType")?.Value;
+
+            if (typeAttr == "array")
+            {
+                return ConvertArrayElement(element, itemTypeAttr);
+            }
+
+            if (element.Name.LocalName == "item" && typeAttr != null)
+            {
+                return ConvertTypedValue(element.Value?.Trim() ?? string.Empty, typeAttr);
+            }
+
             var obj = new JObject();
 
-            foreach (var attr in element.Attributes().Where(a => !a.IsNamespaceDeclaration))
+            foreach (var attr in element.Attributes().Where(a =>
+                !a.IsNamespaceDeclaration &&
+                a.Name.LocalName != "type" &&
+                a.Name.LocalName != "itemType"))
             {
                 obj[$"@{attr.Name.LocalName}"] = attr.Value;
             }
@@ -175,9 +192,28 @@ namespace FormatConverter.Xml
 
                 foreach (var group in grouped)
                 {
-                    if (group.Count() == 1)
+                    if (group.Key == "item" && group.All(e => e.Name.LocalName == "item"))
                     {
-                        obj[group.Key] = ConvertXElementToJToken(group.First());
+                        var array = new JArray();
+                        foreach (var item in group)
+                        {
+                            array.Add(ConvertXElementToJToken(item));
+                        }
+                        return array;
+                    }
+                    else if (group.Count() == 1)
+                    {
+                        var child = group.First();
+                        var childTypeAttr = child.Attribute("type")?.Value;
+
+                        if (childTypeAttr != null && child.Elements().Count() == 0)
+                        {
+                            obj[group.Key] = ConvertTypedValue(child.Value?.Trim() ?? string.Empty, childTypeAttr);
+                        }
+                        else
+                        {
+                            obj[group.Key] = ConvertXElementToJToken(child);
+                        }
                     }
                     else
                     {
@@ -190,14 +226,128 @@ namespace FormatConverter.Xml
             if (childElements.Count == 0)
             {
                 var text = element.Value?.Trim();
+
+                if (typeAttr == "array" && (itemTypeAttr == "empty" || string.IsNullOrEmpty(text)))
+                {
+                    return new JArray();
+                }
+
                 if (!string.IsNullOrEmpty(text))
                 {
-                    obj["#text"] = text;
+                    if (typeAttr != null)
+                    {
+                        return ConvertTypedValue(text, typeAttr);
+                    }
+                    else
+                    {
+                        obj["#text"] = text;
+                    }
                 }
+                else if (typeAttr == "null")
+                {
+                    return JValue.CreateNull();
+                }
+            }
+
+            if (obj.Count == 1 && obj.ContainsKey("#text"))
+            {
+                return obj["#text"]!;
             }
 
             return obj;
         }
+
+        private JArray ConvertArrayElement(XElement element, string? itemType)
+        {
+            var array = new JArray();
+            var items = element.Elements("item");
+
+            foreach (var item in items)
+            {
+                var itemTypeAttr = item.Attribute("type")?.Value ?? itemType;
+
+                if (itemTypeAttr != null && !item.Elements().Any())
+                {
+                    var value = item.Value?.Trim() ?? string.Empty;
+                    array.Add(ConvertTypedValue(value, itemTypeAttr));
+                }
+                else
+                {
+                    array.Add(ConvertXElementToJToken(item));
+                }
+            }
+
+            return array;
+        }
+
+        private JToken ConvertTypedValue(string value, string type)
+        {
+            if (string.IsNullOrEmpty(value) && type != "string")
+            {
+                return type == "null" ? JValue.CreateNull() : new JValue(string.Empty);
+            }
+
+            try
+            {
+                return type.ToLowerInvariant() switch
+                {
+                    "null" => JValue.CreateNull(),
+                    "boolean" => new JValue(ParseBoolean(value)),
+                    "integer" => new JValue(ParseInteger(value)),
+                    "number" => new JValue(ParseNumber(value)),
+                    "string" => new JValue(value),
+                    "date" => new JValue(ParseDate(value)),
+                    "bytes" => new JValue(value),
+                    "guid" => new JValue(ParseGuid(value)),
+                    "uri" => new JValue(new Uri(value)),
+                    "timespan" => new JValue(TimeSpan.Parse(value)),
+                    "empty" => new JArray(),
+                    "mixed" => new JValue(value),
+                    _ => new JValue(value)
+                };
+            }
+            catch (Exception ex) when (Config.IgnoreErrors)
+            {
+                Console.Error.WriteLine($"Warning: Failed to convert '{value}' to type '{type}': {ex.Message}");
+                return new JValue(value);
+            }
+        }
+
+        private static bool ParseBoolean(string value)
+        {
+            return value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                   value.Equals("True", StringComparison.Ordinal) ||
+                   value == "1";
+        }
+
+        private static long ParseInteger(string value)
+        {
+            if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result))
+                return result;
+
+            return long.Parse(value, NumberStyles.Integer, CultureInfo.CurrentCulture);
+        }
+
+        private static double ParseNumber(string value)
+        {
+            var normalized = value.Replace(',', '.');
+
+            if (double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out var result))
+                return result;
+
+            return double.Parse(value, NumberStyles.Float, CultureInfo.CurrentCulture);
+        }
+
+        private static DateTime ParseDate(string value)
+        {
+            if (DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var result))
+                return result;
+
+            return DateTime.Parse(value, CultureInfo.CurrentCulture, DateTimeStyles.RoundtripKind);
+        }
+
+        private static Guid ParseGuid(string value)
+            => Guid.Parse(value);
 
         private static JObject CreateErrorToken(XmlException ex, IXmlLineInfo? lineInfo)
         {
