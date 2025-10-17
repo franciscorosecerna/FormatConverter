@@ -244,7 +244,9 @@ namespace FormatConverter.Yaml
                     return token.Value<long>();
 
                 case JTokenType.Float:
-                    return FormatNumber(token.Value<double>());
+                    if (!string.IsNullOrEmpty(Config.NumberFormat))
+                        return FormatNumber(token.Value<double>());
+                    return token.Value<double>();
 
                 case JTokenType.Boolean:
                     return token.Value<bool>();
@@ -253,8 +255,9 @@ namespace FormatConverter.Yaml
                     return null;
 
                 case JTokenType.Date:
-                    return FormatDateTime(token.Value<DateTime>());
-
+                    if(!string.IsNullOrEmpty(Config.DateFormat))
+                        return FormatDateTime(token.Value<DateTime>());
+                    return token.Value<DateTime>();
                 default:
                     return token.ToString();
             }

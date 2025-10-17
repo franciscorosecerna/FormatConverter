@@ -162,6 +162,8 @@ namespace FormatConverter.Yaml
         {
             var deserializerBuilder = new DeserializerBuilder();
 
+            deserializerBuilder.WithAttemptingUnquotedStringTypeDeserialization();
+
             if (Config.NoMetadata)
             {
                 deserializerBuilder.IgnoreUnmatchedProperties();
@@ -177,7 +179,10 @@ namespace FormatConverter.Yaml
 
         private JToken ParseYamlDocument(string input, IDeserializer deserializer)
         {
-            var yamlObject = deserializer.Deserialize(new StringReader(input))
+            using var reader = new StringReader(input);
+            var parser = new YamlDotNet.Core.Parser(reader);
+
+            var yamlObject = deserializer.Deserialize(parser)
                 ?? throw new FormatException("YAML document is empty or null");
 
             return ConvertObjectToJToken(yamlObject);
@@ -241,12 +246,22 @@ namespace FormatConverter.Yaml
                 return JValue.CreateNull();
             }
 
+            if (obj is Dictionary<object, object> dict)
+                return ConvertDictionaryToJObject(dict, currentDepth);
+
+            if (obj is List<object> list)
+                return ConvertListToJArray(list, currentDepth);
+
+            if (obj is Array array)
+                return ConvertArrayToJArray(array, currentDepth);
+
+            if (obj is string str)
+            {
+                return ParseStringValue(str);
+            }
+
             return obj switch
             {
-                Dictionary<object, object> dict => ConvertDictionaryToJObject(dict, currentDepth),
-                List<object> list => ConvertListToJArray(list, currentDepth),
-                Array array => ConvertArrayToJArray(array, currentDepth),
-                string str => new JValue(str),
                 bool b => new JValue(b),
                 byte b => new JValue(b),
                 sbyte sb => new JValue(sb),
@@ -265,6 +280,43 @@ namespace FormatConverter.Yaml
                 Uri uri => new JValue(uri),
                 _ => new JValue(obj.ToString())
             };
+        }
+
+        private static JValue ParseStringValue(string str)
+        {
+            if (string.IsNullOrEmpty(str))
+                return new JValue(str);
+
+            if (str.Equals("true", StringComparison.OrdinalIgnoreCase))
+                return new JValue(true);
+            if (str.Equals("false", StringComparison.OrdinalIgnoreCase))
+                return new JValue(false);
+
+            if (str.Equals("null", StringComparison.OrdinalIgnoreCase) ||
+                str.Equals("~", StringComparison.Ordinal))
+                return JValue.CreateNull();
+
+            if (long.TryParse(str, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out long longValue))
+            {
+                if (longValue >= int.MinValue && longValue <= int.MaxValue)
+                    return new JValue((int)longValue);
+                return new JValue(longValue);
+            }
+
+            if (double.TryParse(str, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out double doubleValue))
+            {
+                return new JValue(doubleValue);
+            }
+
+            if (DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind, out DateTime dateValue))
+            {
+                return new JValue(dateValue);
+            }
+
+            return new JValue(str);
         }
 
         private JObject ConvertDictionaryToJObject(Dictionary<object, object> dict, int currentDepth)
