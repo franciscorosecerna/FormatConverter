@@ -10,6 +10,8 @@ namespace FormatConverter.Toml
         private readonly StringBuilder _output = new();
         private readonly HashSet<string> _writtenTables = new();
 
+        private const string DefaultArrayWrapperKey = "items";
+
         public override string Serialize(JToken data)
         {
             if (data == null)
@@ -21,6 +23,18 @@ namespace FormatConverter.Toml
             {
                 _output.Clear();
                 _writtenTables.Clear();
+
+                if (processed is JArray arr)
+                {
+                    var wrapperKey = Config.TomlArrayWrapperKey ?? DefaultArrayWrapperKey;
+                    processed = new JObject { [wrapperKey] = arr };
+
+                    if (!Config.Minify)
+                    {
+                        _output.AppendLine($"# Note: Root array automatically wrapped under '{wrapperKey}'");
+                        _output.AppendLine();
+                    }
+                }
 
                 if (processed is JObject obj)
                 {
@@ -113,14 +127,28 @@ namespace FormatConverter.Toml
                     _output.Clear();
                     _writtenTables.Clear();
 
-                    if (items[i] is JObject obj)
+                    var item = items[i];
+
+                    if (item is JArray arr)
+                    {
+                        var wrapperKey = Config.TomlArrayWrapperKey ?? DefaultArrayWrapperKey;
+                        item = new JObject { [wrapperKey] = arr };
+
+                        if (!Config.Minify && i == 0)
+                        {
+                            writer.WriteLine($"# Note: Root array automatically wrapped under '{wrapperKey}'");
+                            writer.WriteLine();
+                        }
+                    }
+
+                    if (item is JObject obj)
                     {
                         WriteObject(obj, string.Empty, 0);
                         writer.WriteLine(_output.ToString().TrimEnd());
                     }
                     else
                     {
-                        throw new FormatException("TOML documents must be objects");
+                        throw new FormatException($"TOML documents must be objects or arrays (got {item.Type})");
                     }
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
@@ -267,15 +295,150 @@ namespace FormatConverter.Toml
 
         private void WriteArrayOfTables(string sectionPath, JArray array)
         {
-            foreach (JObject item in array.Cast<JObject>())
+            for (int i = 0; i < array.Count; i++)
             {
+                if (array[i] is not JObject item)
+                    continue;
+
                 if (_output.Length > 0 && !_output.ToString().EndsWith("\n\n"))
                 {
                     _output.AppendLine();
                 }
 
                 _output.AppendLine($"[[{sectionPath}]]");
-                WriteObject(item, sectionPath, 0);
+
+                var itemPath = $"{sectionPath}[{i}]";
+
+                var simpleProperties = new List<JProperty>();
+                var complexProperties = new List<JProperty>();
+                var nestedArrayOfTables = new List<JProperty>();
+
+                foreach (var prop in item.Properties())
+                {
+                    try
+                    {
+                        if (prop.Value.Type == JTokenType.Array &&
+                            Config.TomlArrayOfTables &&
+                            IsArrayOfTables((JArray)prop.Value))
+                        {
+                            nestedArrayOfTables.Add(prop);
+                        }
+                        else if (IsSimpleValue(prop.Value))
+                        {
+                            simpleProperties.Add(prop);
+                        }
+                        else
+                        {
+                            complexProperties.Add(prop);
+                        }
+                    }
+                    catch (FormatException) when (!Config.TomlStrictTypes)
+                    {
+                        if (Config.IgnoreErrors)
+                        {
+                            Console.Error.WriteLine($"Warning: Skipping property '{prop.Name}' - incompatible with TOML format");
+                            continue;
+                        }
+                        throw;
+                    }
+                }
+
+                foreach (var prop in simpleProperties)
+                {
+                    WriteKeyValue(prop.Name, prop.Value, 0);
+                }
+
+                foreach (var prop in complexProperties)
+                {
+                    var nestedPath = $"{sectionPath}.{EscapeTomlKey(prop.Name)}";
+
+                    if (prop.Value.Type == JTokenType.Object)
+                    {
+                        if (_output.Length > 0 && !_output.ToString().EndsWith("\n\n"))
+                        {
+                            _output.AppendLine();
+                        }
+                        _output.AppendLine($"[{nestedPath}]");
+                        WriteObjectProperties((JObject)prop.Value, nestedPath, 1);
+                    }
+                    else if (prop.Value.Type == JTokenType.Array && !Config.TomlArrayOfTables)
+                    {
+                        WriteKeyValue(prop.Name, prop.Value, 0);
+                    }
+                }
+
+                foreach (var prop in nestedArrayOfTables)
+                {
+                    var nestedPath = $"{sectionPath}.{EscapeTomlKey(prop.Name)}";
+                    WriteArrayOfTables(nestedPath, (JArray)prop.Value);
+                }
+            }
+        }
+
+        private void WriteObjectProperties(JObject obj, string sectionPath, int depth)
+        {
+            var simpleProperties = new List<JProperty>();
+            var complexProperties = new List<JProperty>();
+            var arrayOfTablesProperties = new List<JProperty>();
+
+            foreach (var prop in obj.Properties())
+            {
+                try
+                {
+                    if (prop.Value.Type == JTokenType.Array &&
+                        Config.TomlArrayOfTables &&
+                        IsArrayOfTables((JArray)prop.Value))
+                    {
+                        arrayOfTablesProperties.Add(prop);
+                    }
+                    else if (IsSimpleValue(prop.Value))
+                    {
+                        simpleProperties.Add(prop);
+                    }
+                    else
+                    {
+                        complexProperties.Add(prop);
+                    }
+                }
+                catch (FormatException) when (!Config.TomlStrictTypes)
+                {
+                    if (Config.IgnoreErrors)
+                    {
+                        Console.Error.WriteLine($"Warning: Skipping property '{prop.Name}' - incompatible with TOML format");
+                        continue;
+                    }
+                    throw;
+                }
+            }
+
+            foreach (var prop in simpleProperties)
+            {
+                WriteKeyValue(prop.Name, prop.Value, depth);
+            }
+
+            foreach (var prop in complexProperties)
+            {
+                var newSectionPath = $"{sectionPath}.{EscapeTomlKey(prop.Name)}";
+
+                if (prop.Value.Type == JTokenType.Object)
+                {
+                    if (_output.Length > 0 && !_output.ToString().EndsWith("\n\n"))
+                    {
+                        _output.AppendLine();
+                    }
+                    _output.AppendLine($"[{newSectionPath}]");
+                    WriteObjectProperties((JObject)prop.Value, newSectionPath, depth + 1);
+                }
+                else if (prop.Value.Type == JTokenType.Array && !Config.TomlArrayOfTables)
+                {
+                    WriteKeyValue(prop.Name, prop.Value, depth);
+                }
+            }
+
+            foreach (var prop in arrayOfTablesProperties)
+            {
+                var newSectionPath = $"{sectionPath}.{EscapeTomlKey(prop.Name)}";
+                WriteArrayOfTables(newSectionPath, (JArray)prop.Value);
             }
         }
 
@@ -293,7 +456,7 @@ namespace FormatConverter.Toml
             return value.Type switch
             {
                 JTokenType.Null => HandleNullValue(),
-                JTokenType.String => FormatString(value.Value<string>()!),
+                JTokenType.String => FormatStringValue(value),
                 JTokenType.Boolean => value.Value<bool>().ToString().ToLower(),
                 JTokenType.Integer => FormatInteger(value.Value<long>()),
                 JTokenType.Float => FormatFloat(value.Value<double>()),
@@ -302,6 +465,21 @@ namespace FormatConverter.Toml
                 JTokenType.Object => FormatInlineTable((JObject)value),
                 _ => $"\"{value}\""
             };
+        }
+
+        private string FormatStringValue(JToken value)
+        {
+            var str = value.Value<string>()!;
+
+            if (DateTime.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime dateTime))
+            {
+                if (str.Contains('T') && (str.Contains('-') || str.Contains(':')))
+                {
+                    return FormatDateTime(dateTime);
+                }
+            }
+
+            return FormatString(str);
         }
 
         private string HandleNullValue()
@@ -364,13 +542,13 @@ namespace FormatConverter.Toml
             {
                 return Config.DateFormat.ToLower() switch
                 {
-                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture),
+                    "iso8601" => dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture),
                     "rfc3339" => dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz", CultureInfo.InvariantCulture),
                     _ => dateTime.ToString(Config.DateFormat, CultureInfo.InvariantCulture)
                 };
             }
 
-            return dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fff", CultureInfo.InvariantCulture);
+            return dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff", CultureInfo.InvariantCulture);
         }
 
         private string FormatArray(JArray array)

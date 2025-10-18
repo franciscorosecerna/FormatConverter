@@ -41,6 +41,7 @@ namespace FormatConverter
         public bool TomlArrayOfTables { get; set; }
         public bool TomlMultilineStrings { get; set; }
         public bool TomlStrictTypes { get; set; }
+        public string? TomlArrayWrapperKey { get; set; }
 
         //messagePack specific
         public bool MessagePackUseContractless { get; set; } = true;
@@ -110,6 +111,7 @@ namespace FormatConverter
                 TomlArrayOfTables = options.TomlArrayOfTables,
                 TomlMultilineStrings = options.TomlMultilineStrings,
                 TomlStrictTypes = options.TomlStrictTypes,
+                TomlArrayWrapperKey = options.TomlArrayWrapperKey,
 
                 //MessagePack
                 MessagePackUseContractless = options.MessagePackUseContractless,

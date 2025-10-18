@@ -120,6 +120,9 @@ namespace FormatConverter
         [Option("toml-strict-types", Default = false, HelpText = "Enforce strict type conversion (fail if types cannot be represented in TOML)")]
         public bool TomlStrictTypes { get; set; } = false;
 
+        [Option("toml-array-wrapper-key", HelpText = "Wrap root array; uses 'item' if not specified")]
+        public string? TomlArrayWrapperKey { get; set; }
+
         #endregion
 
         #region MessagePack Options
