@@ -1,10 +1,12 @@
-﻿using Newtonsoft.Json.Linq;
+﻿using FormatConverter.Logger;
+using Newtonsoft.Json.Linq;
 
 namespace FormatConverter.Interfaces
 {
     public abstract class BaseInputStrategy : IInputFormatStrategy
     {
         protected FormatConfig Config { get; private set; } = new FormatConfig();
+        protected ILogger Logger { get; private set; } = new ConsoleLogger();
 
         public virtual void Configure(FormatConfig config)
         {

@@ -1,10 +1,12 @@
-﻿using YamlDotNet.Core;
+﻿using FormatConverter.Logger;
+using YamlDotNet.Core;
 using YamlDotNet.Core.Events;
 
 namespace FormatConverter.Yaml.YamlParser
 {
     public class MaxDepthValidatingParser : IParser
     {
+        private readonly ConsoleLogger _logger = new();
         private readonly IParser _innerParser;
         private readonly int _maxDepth;
         private readonly bool _ignoreErrors;
@@ -44,7 +46,7 @@ namespace FormatConverter.Yaml.YamlParser
                     {
                         if (_ignoreErrors)
                         {
-                            Console.Error.WriteLine(
+                            _logger.WriteWarning(
                                 $"Warning: Maximum depth {_maxDepth} exceeded at line {current.Start.Line}, " +
                                 $"column {current.Start.Column}. Skipping nested content."
                             );

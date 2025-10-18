@@ -1,4 +1,5 @@
-﻿using Newtonsoft.Json.Linq;
+﻿using FormatConverter.Logger;
+using Newtonsoft.Json.Linq;
 using System.Text;
 
 namespace FormatConverter.Interfaces
@@ -6,6 +7,7 @@ namespace FormatConverter.Interfaces
     public abstract class BaseOutputStrategy : IOutputFormatStrategy
     {
         protected FormatConfig Config { get; private set; } = new FormatConfig();
+        protected ILogger Logger { get; private set; } = new ConsoleLogger();
 
         public virtual void Configure(FormatConfig config)
         {
@@ -89,8 +91,8 @@ namespace FormatConverter.Interfaces
             return Config.NumberFormat?.ToLower() switch
             {
                 "hexadecimal" => $"0x{(long)number:X}",
-                "scientific" => number.ToString("E"),
-                _ => number.ToString()
+                "scientific" => number.ToString("E", System.Globalization.CultureInfo.InvariantCulture),
+                _ => number.ToString(System.Globalization.CultureInfo.InvariantCulture)
             };
         }
 

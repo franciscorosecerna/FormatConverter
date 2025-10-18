@@ -104,6 +104,7 @@ namespace FormatConverter.Yaml
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
+                    Logger.WriteWarning($"YAML serialization error ignored: {ex.Message}");
                     var errorYaml = CreateErrorYaml(ex.Message, ex.GetType().Name, items[i]);
                     writer.WriteLine(errorYaml);
                 }
@@ -126,6 +127,7 @@ namespace FormatConverter.Yaml
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
+                Logger.WriteWarning($"YAML serialization error ignored: {ex.Message}");
                 return CreateErrorYaml(ex.Message, ex.GetType().Name, token);
             }
         }
@@ -207,7 +209,7 @@ namespace FormatConverter.Yaml
             {
                 if (Config.IgnoreErrors)
                 {
-                    Console.Error.WriteLine($"Warning: Maximum depth {Config.MaxDepth.Value} exceeded during serialization");
+                    Logger.WriteWarning($"Maximum depth {Config.MaxDepth.Value} exceeded during serialization");
                     return $"[Max depth exceeded at level {currentDepth}]";
                 }
                 throw new FormatException($"Maximum depth of {Config.MaxDepth.Value} exceeded during serialization");
@@ -255,7 +257,7 @@ namespace FormatConverter.Yaml
                     return null;
 
                 case JTokenType.Date:
-                    if(!string.IsNullOrEmpty(Config.DateFormat))
+                    if (!string.IsNullOrEmpty(Config.DateFormat))
                         return FormatDateTime(token.Value<DateTime>());
                     return token.Value<DateTime>();
                 default:

@@ -267,7 +267,7 @@ namespace FormatConverter.Toml
             var str = tomlDateTime.ToString();
             if (str.Length > 19 && (str[19] == '+' || str[19] == '-'))
             {
-                str = str.Substring(0, 19);
+                str = str[..19];
             }
             return new JValue(str);
         }

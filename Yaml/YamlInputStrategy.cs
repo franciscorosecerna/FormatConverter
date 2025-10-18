@@ -78,7 +78,7 @@ namespace FormatConverter.Yaml
                         if (showProgress && documentsProcessed % 100 == 0)
                         {
                             var progress = (double)fileStream.Position / fileSize * 100;
-                            Console.Error.Write($"\rProcessing: {progress:F1}% ({documentsProcessed} documents)");
+                            Logger.WriteInfo($"Processing: {progress:F1}% ({documentsProcessed} documents)");
                         }
 
                         yield return token;
@@ -89,7 +89,7 @@ namespace FormatConverter.Yaml
 
                 if (showProgress)
                 {
-                    Console.Error.WriteLine($"\rCompleted: {documentsProcessed} documents processed");
+                    Logger.WriteInfo($"Completed: {documentsProcessed} documents processed");
                 }
             }
             finally
@@ -130,7 +130,7 @@ namespace FormatConverter.Yaml
 
                 if (Config.IgnoreErrors)
                 {
-                    Console.Error.WriteLine($"Warning: YAML error ignored in {errorLocation}: {ex.Message}");
+                    Logger.WriteWarning($"YAML error ignored in {errorLocation}: {ex.Message}");
                     return CreateErrorToken(ex, errorLocation, (int)ex.Start.Line, (int)ex.Start.Column);
                 }
 
@@ -138,7 +138,7 @@ namespace FormatConverter.Yaml
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: Unexpected error ignored in {source}: {ex.Message}");
+                Logger.WriteWarning($"Unexpected error ignored in {source}: {ex.Message}");
                 return CreateErrorToken(ex, source, 0, 0);
             }
         }
@@ -192,7 +192,7 @@ namespace FormatConverter.Yaml
         {
             if (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: YAML parsing error ignored: {ex.Message}");
+                Logger.WriteWarning($"YAML parsing error ignored: {ex.Message}");
 
                 var snippet = input.Length > 1000
                     ? string.Concat(input.AsSpan(0, 1000), "...")
@@ -235,7 +235,7 @@ namespace FormatConverter.Yaml
             {
                 if (Config.IgnoreErrors)
                 {
-                    Console.Error.WriteLine($"Warning: Maximum depth {Config.MaxDepth.Value} exceeded");
+                    Logger.WriteWarning($"Maximum depth {Config.MaxDepth.Value} exceeded");
                     return new JValue($"[Max depth exceeded at level {currentDepth}]");
                 }
                 throw new FormatException($"Maximum depth of {Config.MaxDepth.Value} exceeded");

@@ -1,4 +1,5 @@
 ﻿using CommandLine;
+using FormatConverter.Logger;
 using System.IO.Compression;
 
 namespace FormatConverter
@@ -7,6 +8,9 @@ namespace FormatConverter
     {
         public const string VERSION = "2.0";
         public static readonly string[] BinaryFormats = ["messagepack", "cbor", "protobuf", "bxml"];
+        internal static readonly string[] sourceArray = ["gzip", "deflate", "brotli"];
+
+        private static readonly ConsoleLogger _logger = new();
 
         static int Main(string[] args)
         {
@@ -23,9 +27,6 @@ namespace FormatConverter
 
         internal static int Run(Options opts)
         {
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            bool success = false;
-
             try
             {
                 if (opts.Version)
@@ -46,109 +47,99 @@ namespace FormatConverter
 
                 if (opts.Verbose)
                 {
-                    WriteInfo("Configuration:");
+                    _logger.WriteInfo("Configuration:");
                     Console.WriteLine(formatConfig);
                 }
 
                 if (opts.UseStreaming)
                 {
-                    WriteInfo("Streaming mode enabled.");
+                    _logger.WriteInfo("Streaming mode enabled.");
                     using var cts = new CancellationTokenSource();
 
                     Console.CancelKeyPress += (s, e) =>
                     {
-                        WriteWarning("Cancellation requested (Ctrl+C)...");
+                        _logger.WriteWarning("Cancellation requested (Ctrl+C)...");
                         e.Cancel = true;
                         cts.Cancel();
                     };
-
-                    return RunStreamingConversion(opts, formatConfig, cts.Token);
+                    return RunStreamingConversion(opts, formatConfig, _logger, cts.Token);
                 }
 
-                var result = ProcessRegularConversion(opts, formatConfig);
-                success = true;
+                var result = ProcessRegularConversion(opts, formatConfig, _logger);
                 return result;
             }
             catch (ArgumentException ex)
             {
-                WriteError($"Configuration error: {ex.Message}");
+                _logger.WriteError($"Configuration error: {ex.Message}");
                 return 3;
             }
             catch (Exception ex)
             {
-                WriteError($"Unexpected error: {ex.Message}");
+                _logger.WriteError($"Unexpected error: {ex.Message}");
 #if DEBUG
                 Console.Error.WriteLine(ex);
 #endif
                 return 4;
             }
-            finally
-            {
-                stopwatch.Stop();
-                if (success && !opts.Version && !opts.ListFormats)
-                {
-                    ConversionMetrics.RecordConversion(opts.InputFormat, opts.OutputFormat, stopwatch.Elapsed);
-                }
-            }
         }
 
         #region Regular conversion (no streaming)
-        internal static int ProcessRegularConversion(Options opts, FormatConfig config)
+        internal static int ProcessRegularConversion(Options opts, FormatConfig config, ILogger logger)
         {
             var supported = FormatStrategyFactory.GetSupportedFormats();
 
             if (!supported.Contains(opts.InputFormat.ToLower()) ||
                 !supported.Contains(opts.OutputFormat.ToLower()))
             {
-                WriteError($"Unsupported format. Supported: {string.Join(", ", supported)}");
+                logger.WriteError($"Unsupported format. Supported: {string.Join(", ", supported)}");
                 return 3;
             }
 
             if (opts.InputFormat.Equals(opts.OutputFormat, StringComparison.OrdinalIgnoreCase) &&
                 !HasFormatSpecificOptions(opts))
             {
-                WriteWarning("Input and output formats are the same and no format-specific options provided.");
+                logger.WriteWarning("Input and output formats are the same and no format-specific options provided.");
                 return 0;
             }
 
             try
             {
-                var inputText = ReadInput(opts.InputFile, opts.InputFormat, config);
+                var inputText = ReadInput(opts.InputFile, opts.InputFormat, config, logger);
 
                 var inputStrategy = FormatStrategyFactory.CreateInputStrategy(opts.InputFormat, config);
                 var outputStrategy = FormatStrategyFactory.CreateOutputStrategy(opts.OutputFormat, config);
 
-                if (opts.Verbose) WriteInfo($"Parsing {opts.InputFormat}...");
+                if (opts.Verbose) logger.WriteInfo($"Parsing {opts.InputFormat}...");
                 var parsedData = inputStrategy.Parse(inputText);
 
-                if (opts.Verbose) WriteInfo($"Serializing to {opts.OutputFormat}...");
+                if (opts.Verbose) logger.WriteInfo($"Serializing to {opts.OutputFormat}...");
                 string result = outputStrategy.Serialize(parsedData);
 
                 if (!string.IsNullOrEmpty(config.Compression))
                 {
-                    if (opts.Verbose) WriteInfo($"Applying {config.Compression} compression...");
+                    if (opts.Verbose) logger.WriteInfo($"Applying {config.Compression} compression...");
                     result = CompressString(result, config);
                 }
 
-                return WriteResult(opts, config, result);
+                return WriteResult(opts, config, result, logger);
             }
             catch (Exception ex)
             {
-                WriteError($"Conversion error: {ex.Message}");
+                logger.WriteError($"Conversion error: {ex.Message}");
                 return 4;
             }
         }
         #endregion
 
         #region Streaming conversion
-        internal static int RunStreamingConversion(Options opts, FormatConfig config, CancellationToken token)
+        internal static int RunStreamingConversion(Options opts, FormatConfig config, ILogger logger, CancellationToken token)
         {
             var supportedFormats = FormatStrategyFactory.GetSupportedFormats();
 
             if (!supportedFormats.Contains(opts.InputFormat.ToLower()) ||
                 !supportedFormats.Contains(opts.OutputFormat.ToLower()))
             {
-                WriteError($"Unsupported format. Supported formats: {string.Join(", ", supportedFormats)}");
+                logger.WriteError($"Unsupported format. Supported formats: {string.Join(", ", supportedFormats)}");
                 return 3;
             }
 
@@ -159,12 +150,12 @@ namespace FormatConverter
 
             if (File.Exists(outputFile) && !opts.Force)
             {
-                WriteError($"Output file '{outputFile}' already exists. Use --force to overwrite.");
+                logger.WriteError($"Output file '{outputFile}' already exists. Use --force to overwrite.");
                 return 2;
             }
 
             if (opts.Verbose)
-                WriteInfo($"Streaming from {opts.InputFile} → {outputFile}");
+                logger.WriteInfo($"Streaming from {opts.InputFile} → {outputFile}");
 
             using var inputStream = opts.InputFile == "-"
                 ? Console.OpenStandardInput()
@@ -187,21 +178,21 @@ namespace FormatConverter
 
                     count++;
                     if (opts.Verbose && count % 100 == 0)
-                        WriteInfo($"Processed {count} records...");
+                        logger.WriteInfo($"Processed {count} records...");
                 }
 
-                WriteSuccess($"Streaming conversion completed ({count} records): {opts.InputFormat.ToUpper()} → {opts.OutputFormat.ToUpper()}");
+                logger.WriteSuccess($"Streaming conversion completed ({count} records): {opts.InputFormat.ToUpper()} → {opts.OutputFormat.ToUpper()}");
                 Console.WriteLine($"Output: {outputFile}");
                 return 0;
             }
             catch (OperationCanceledException)
             {
-                WriteWarning("Conversion canceled by user.");
+                logger.WriteWarning("Conversion canceled by user.");
                 return 1;
             }
             catch (Exception ex)
             {
-                WriteError($"Streaming conversion failed: {ex.Message}");
+                logger.WriteError($"Streaming conversion failed: {ex.Message}");
 #if DEBUG
                 Console.Error.WriteLine(ex);
 #endif
@@ -243,7 +234,7 @@ namespace FormatConverter
             return Convert.ToBase64String(output.ToArray());
         }
 
-        internal static string ReadInput(string path, string format, FormatConfig config)
+        internal static string ReadInput(string path, string format, FormatConfig config, ILogger logger)
         {
             if (path == "-")
             {
@@ -256,14 +247,12 @@ namespace FormatConverter
 
             var fileInfo = new FileInfo(path);
 
-            // Advertencia para archivos grandes
-            if (fileInfo.Length > 50 * 1024 * 1024) // 50MB
+            if (fileInfo.Length > 50 * 1024 * 1024)
             {
-                WriteWarning($"Large input file detected: {fileInfo.Length / 1024 / 1024}MB");
-                WriteWarning("Consider using --streaming mode for better performance");
+                logger.WriteWarning($"Large input file detected: {fileInfo.Length / 1024 / 1024}MB");
+                logger.WriteWarning("Consider using --streaming mode for better performance");
             }
 
-            // Validar que archivos binarios no estén vacíos
             if (BinaryFormats.Contains(format.ToLower()) && fileInfo.Length == 0)
                 throw new InvalidDataException("Binary input file is empty");
 
@@ -272,7 +261,7 @@ namespace FormatConverter
                 : File.ReadAllText(path, config.Encoding);
         }
 
-        internal static int WriteResult(Options opts, FormatConfig config, string result)
+        internal static int WriteResult(Options opts, FormatConfig config, string result, ILogger logger)
         {
             if (opts.InputFile == "-")
             {
@@ -284,15 +273,31 @@ namespace FormatConverter
 
             if (File.Exists(outputFile) && !opts.Force)
             {
-                WriteError($"Output file '{outputFile}' already exists. Use --force to overwrite.");
+                logger.WriteError($"Output file '{outputFile}' already exists. Use --force to overwrite.");
                 return 2;
             }
 
-            WriteOutput(outputFile, result, opts.OutputFormat, config);
+            FileLogger? fileLogger = null;
+            try
+            {
+                if (!BinaryFormats.Contains(opts.OutputFormat.ToLower()))
+                {
+                    fileLogger = new FileLogger(outputFile, config.Encoding, includeTimestamps: false);
+                    fileLogger.WriteSuccess(result);
+                }
+                else
+                {
+                    WriteOutput(outputFile, result, opts.OutputFormat, config);
+                }
 
-            WriteSuccess($"Success: {opts.InputFormat.ToUpper()} → {opts.OutputFormat.ToUpper()}");
-            Console.WriteLine($"Output: {outputFile}");
-            return 0;
+                logger.WriteSuccess($"Success: {opts.InputFormat.ToUpper()} → {opts.OutputFormat.ToUpper()}");
+                Console.WriteLine($"Output: {outputFile}");
+                return 0;
+            }
+            finally
+            {
+                fileLogger?.Dispose();
+            }
         }
 
         internal static void WriteOutput(string path, string content, string format, FormatConfig config)
@@ -334,16 +339,16 @@ namespace FormatConverter
 
         internal static void ShowVersionInfo()
         {
-            WriteInfo($"FormatConverter CLI v{VERSION}");
-            WriteInfo("Usage examples:");
-            WriteInfo("  FormatConverter -i data.json --input-format json --output-format xml --pretty");
-            WriteInfo("  FormatConverter -i data.xml --input-format xml --output-format yaml --minify");
-            WriteInfo("  FormatConverter -i data.json --input-format json --output-format bxml --streaming");
+            _logger.WriteInfo($"FormatConverter CLI v{VERSION}");
+            _logger.WriteInfo("Usage examples:");
+            _logger.WriteInfo("  FormatConverter -i data.json --input-format json --output-format xml --pretty");
+            _logger.WriteInfo("  FormatConverter -i data.xml --input-format xml --output-format yaml --minify");
+            _logger.WriteInfo("  FormatConverter -i data.json --input-format json --output-format bxml --streaming");
         }
 
         internal static void ShowSupportedFormats()
         {
-            WriteInfo("Supported formats:");
+            _logger.WriteInfo("Supported formats:");
             foreach (var f in FormatStrategyFactory.GetSupportedFormats())
                 Console.WriteLine($"  - {f}");
         }
@@ -356,64 +361,12 @@ namespace FormatConverter
             if (string.IsNullOrEmpty(opts.InputFormat) || string.IsNullOrEmpty(opts.OutputFormat))
                 throw new ArgumentException("Input and output formats are required");
 
-            // Validar que el formato de compresión sea soportado
             if (!string.IsNullOrEmpty(opts.Compression) &&
-                !new[] { "gzip", "deflate", "brotli" }.Contains(opts.Compression.ToLower()))
+                !sourceArray.Contains(opts.Compression.ToLower()))
             {
                 throw new ArgumentException($"Unsupported compression type: {opts.Compression}");
             }
         }
-
-        internal static void WriteError(string msg) => WriteColored(ConsoleColor.Red, "ERROR: ", msg, true);
-        internal static void WriteWarning(string msg) => WriteColored(ConsoleColor.Yellow, "WARNING: ", msg);
-        internal static void WriteInfo(string msg) => WriteColored(ConsoleColor.Cyan, "INFO: ", msg);
-        internal static void WriteSuccess(string msg) => WriteColored(ConsoleColor.Green, "SUCCESS: ", msg);
-
-        internal static void WriteColored(ConsoleColor color, string prefix, string msg, bool stderr = false)
-        {
-            var original = Console.ForegroundColor;
-            Console.ForegroundColor = color;
-
-            if (stderr)
-                Console.Error.WriteLine($"{prefix}{msg}");
-            else
-                Console.WriteLine($"{prefix}{msg}");
-
-            Console.ForegroundColor = original;
-        }
         #endregion
     }
-
-    #region Metrics Class
-    public static class ConversionMetrics
-    {
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _conversions = new();
-        private static readonly List<TimeSpan> _durations = new();
-
-        public static void RecordConversion(string from, string to, TimeSpan duration)
-        {
-            var key = $"{from.ToLower()}_{to.ToLower()}";
-            _conversions.AddOrUpdate(key, 1, (_, count) => count + 1);
-            _durations.Add(duration);
-        }
-
-        public static void ReportMetrics()
-        {
-            if (_conversions.IsEmpty) return;
-
-            Program.WriteInfo("=== Conversion Statistics ===");
-            foreach (var (conversion, count) in _conversions.OrderByDescending(x => x.Value))
-            {
-                var formats = conversion.Split('_');
-                Console.WriteLine($"  {formats[0]} → {formats[1]}: {count} conversions");
-            }
-
-            if (_durations.Count != 0)
-            {
-                Console.WriteLine($"  Average duration: {_durations.Average(t => t.TotalMilliseconds):F0}ms");
-                Console.WriteLine($"  Total conversions: {_durations.Count}");
-            }
-        }
-    }
-    #endregion
 }

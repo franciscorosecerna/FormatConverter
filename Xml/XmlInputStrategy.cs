@@ -66,7 +66,7 @@ namespace FormatConverter.Xml
                         if (showProgress && elementsProcessed % 100 == 0)
                         {
                             var progress = (double)fileStream.Position / fileSize * 100;
-                            Console.Error.Write($"\rProcessing: {progress:F1}% ({elementsProcessed} elements)");
+                            Logger.WriteInfo($"Processing: {progress:F1}% ({elementsProcessed} elements)");
                         }
 
                         yield return token;
@@ -76,7 +76,7 @@ namespace FormatConverter.Xml
 
             if (showProgress)
             {
-                Console.Error.WriteLine($"\rCompleted: {elementsProcessed} elements processed");
+                Logger.WriteInfo($"Completed: {elementsProcessed} elements processed");
             }
         }
 
@@ -94,8 +94,8 @@ namespace FormatConverter.Xml
             {
                 if (Config.IgnoreErrors)
                 {
-                    Console.Error.WriteLine($"Warning: XML error at line {ex.LineNumber}, " +
-                                          $"position {ex.LinePosition}: {ex.Message}");
+                    Logger.WriteWarning($"XML error at line {ex.LineNumber}, " +
+                                      $"position {ex.LinePosition}: {ex.Message}");
                     return CreateErrorToken(ex, xmlReader as IXmlLineInfo);
                 }
 
@@ -105,7 +105,7 @@ namespace FormatConverter.Xml
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: Unexpected error in {path}: {ex.Message}");
+                Logger.WriteWarning($"Unexpected error in {path}: {ex.Message}");
                 return CreateErrorToken(ex, path);
             }
         }
@@ -152,7 +152,7 @@ namespace FormatConverter.Xml
         {
             if (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: XML parsing error: {ex.Message}");
+                Logger.WriteWarning($"XML parsing error: {ex.Message}");
                 return CreateErrorToken(ex, input);
             }
 
@@ -308,7 +308,7 @@ namespace FormatConverter.Xml
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: Failed to convert '{value}' to type '{type}': {ex.Message}");
+                Logger.WriteWarning($"Failed to convert '{value}' to type '{type}': {ex.Message}");
                 return new JValue(value);
             }
         }

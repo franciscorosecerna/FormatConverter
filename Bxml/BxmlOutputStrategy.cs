@@ -83,11 +83,12 @@ namespace FormatConverter.Bxml
             {
                 Encoding = Config.Encoding,
                 Endianness = Config.Endianness,
-                MaxDepth = Config.MaxDepth!.Value > 0 ? Config.MaxDepth.Value : 1000,
+                MaxDepth = Config.MaxDepth ?? 1000,
                 CompressArrays = Config.CompressArrays,
                 LeaveOpen = false
             };
         }
+
 
         private void SerializeStreamBinary(IEnumerable<JToken> data, Stream output, int chunkSize, CancellationToken cancellationToken)
         {
