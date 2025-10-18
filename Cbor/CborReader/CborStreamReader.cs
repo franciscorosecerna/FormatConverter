@@ -17,7 +17,6 @@ namespace FormatConverter.Cbor.CborReader
         private readonly bool _allowIndefiniteLength;
         private readonly bool _allowMultipleContent;
         private readonly int _maxDepth;
-
         /// <summary>
         /// Initializes a new instance of the CborStreamReader class.
         /// </summary>

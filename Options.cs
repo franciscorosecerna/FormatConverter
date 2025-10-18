@@ -172,7 +172,7 @@ namespace FormatConverter
 
         #region Compression Options
 
-        [Option("compress", MetaValue = "TYPE", HelpText = "Compress output using specified algorithm (gzip, deflate, brotli)")]
+        [Option("compress", MetaValue = "TYPE", HelpText = "Compress output using specified algorithm (gzip, deflate, brotli, lz4)")]
         public string? Compression { get; set; }
 
         #endregion
@@ -202,7 +202,7 @@ namespace FormatConverter
 
         #region Format Options
 
-        [Option("number-format", MetaValue = "FORMAT", HelpText = "Number format for output (decimal, hexadecimal, scientific)")]
+        [Option("number-format", MetaValue = "FORMAT", HelpText = "Number format for output (decimal, hexadecimal, scientific, binary, raw)")]
         public string? NumberFormat { get; set; }
 
         [Option("date-format", MetaValue = "FORMAT", HelpText = "Date format string (e.g., 'yyyy-MM-dd', 'ISO8601', 'unix')")]

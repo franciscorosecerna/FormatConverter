@@ -153,6 +153,7 @@ namespace FormatConverter.Cbor
                     }
                     catch (Exception ex) when (Config.IgnoreErrors)
                     {
+                        Logger.WriteWarning($"Error serializing token to binary: {ex.Message}");
                         var errorBytes = CreateErrorOutputBytes(ex.Message, ex.GetType().Name, items[i], options);
 
                         if (errorBytes.Length <= rentedBuffer.Length)
@@ -220,6 +221,7 @@ namespace FormatConverter.Cbor
                     }
                     catch (Exception ex) when (Config.IgnoreErrors)
                     {
+                        Logger.WriteWarning($"Error serializing token to text: {ex.Message}");
                         var errorOutput = CreateErrorOutput(ex.Message, ex.GetType().Name, items[i]);
 
                         if (!isFirst && !Config.Minify)
@@ -258,6 +260,7 @@ namespace FormatConverter.Cbor
                 {
                     if (Config.IgnoreErrors)
                     {
+                        Logger.WriteWarning("Failed to convert token to CBOR");
                         return CreateErrorOutput("Failed to convert token to CBOR", "ConversionError", token);
                     }
                     throw new FormatException("Failed to convert JSON to CBOR object");
@@ -270,6 +273,7 @@ namespace FormatConverter.Cbor
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
+                Logger.WriteWarning($"Error serializing token: {ex.Message}");
                 return CreateErrorOutput(ex.Message, ex.GetType().Name, token);
             }
         }
@@ -285,7 +289,10 @@ namespace FormatConverter.Cbor
 
                 CBORObject.DecodeFromBytes(bytes);
             }
-            catch when (!Config.StrictMode) { }
+            catch (Exception ex) when (!Config.StrictMode)
+            {
+                Logger.WriteWarning($"CBOR validation warning: {ex.Message}");
+            }
         }
 
         private static byte[] ConvertFromHex(string hex)
@@ -396,7 +403,7 @@ namespace FormatConverter.Cbor
         {
             if (Config.CborUseDateTimeTags)
             {
-                if (!string.IsNullOrEmpty(Config.DateFormat) 
+                if (!string.IsNullOrEmpty(Config.DateFormat)
                     && Config.DateFormat.Equals("unix", StringComparison.CurrentCultureIgnoreCase))
                 {
                     var unixTime = ((DateTimeOffset)dateTime).ToUnixTimeSeconds();
@@ -656,8 +663,9 @@ namespace FormatConverter.Cbor
 
                 return errorMap.EncodeToBytes(options);
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.WriteWarning($"Failed to create error output bytes: {ex.Message}");
                 var errorObj = new JObject
                 {
                     ["error"] = errorMessage,
@@ -692,8 +700,9 @@ namespace FormatConverter.Cbor
                 var errorBytes = errorMap.EncodeToBytes(options);
                 return FormatOutput(errorBytes);
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.WriteWarning($"Failed to create error output: {ex.Message}");
                 var errorBytes = Config.Encoding.GetBytes(errorObj.ToString(Newtonsoft.Json.Formatting.None));
                 return Convert.ToBase64String(errorBytes);
             }

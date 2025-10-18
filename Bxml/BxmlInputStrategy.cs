@@ -52,12 +52,12 @@ namespace FormatConverter.Bxml
                 maxDepth: Config.MaxDepth!.Value);
 
             if (showProgress)
-                Console.Error.Write("\rInitializing BXML stream reader...");
+                Logger.WriteInfo("Initializing BXML stream reader...");
 
             reader.Initialize();
 
             if (showProgress)
-                Console.Error.Write("\rReading BXML document...");
+                Logger.WriteInfo("Reading BXML document...");
 
             string[] stringTable = reader.GetStringTable();
 
@@ -77,7 +77,7 @@ namespace FormatConverter.Bxml
             {
                 if (Config.IgnoreErrors)
                 {
-                    Console.Error.WriteLine($"\nWarning: Error reading BXML document: {error.Message}");
+                    Logger.WriteWarning($"Error reading BXML document: {error.Message}");
                     yield return CreateErrorToken(error, $"File: {path}");
                     yield break;
                 }
@@ -85,7 +85,7 @@ namespace FormatConverter.Bxml
             }
 
             if (showProgress)
-                Console.Error.Write("\rConverting to JSON...");
+                Logger.WriteInfo("Converting to JSON...");
 
             JToken? json = null;
             error = null;
@@ -103,7 +103,7 @@ namespace FormatConverter.Bxml
             {
                 if (Config.IgnoreErrors)
                 {
-                    Console.Error.WriteLine($"\nWarning: Error converting BXML to JSON: {error.Message}");
+                    Logger.WriteWarning($"Error converting BXML to JSON: {error.Message}");
                     yield return CreateErrorToken(error, $"File: {path}");
                     yield break;
                 }
@@ -113,14 +113,14 @@ namespace FormatConverter.Bxml
             yield return json!;
 
             if (showProgress)
-                Console.Error.WriteLine("Completed");
+                Logger.WriteSuccess("Completed");
         }
 
         private JToken HandleParsingError(Exception ex, string input)
         {
             if (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: BXML parsing error: {ex.Message}");
+                Logger.WriteWarning($"BXML parsing error: {ex.Message}");
                 return CreateErrorToken(ex, input);
             }
 

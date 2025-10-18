@@ -118,7 +118,7 @@ namespace FormatConverter
                 if (!string.IsNullOrEmpty(config.Compression))
                 {
                     if (opts.Verbose) logger.WriteInfo($"Applying {config.Compression} compression...");
-                    result = CompressString(result, config);
+                    result = CompressString(result, config, opts);
                 }
 
                 return WriteResult(opts, config, result, logger);
@@ -215,9 +215,16 @@ namespace FormatConverter
             opts.YamlFlowStyle ||
             !string.IsNullOrEmpty(opts.Compression);
 
-        internal static string CompressString(string input, FormatConfig config)
+        internal static string CompressString(string input, FormatConfig config, Options opt)
         {
             var bytes = config.Encoding.GetBytes(input);
+
+            if ((opt.InputFormat == "messagepack" || opt.OutputFormat == "messagepack") &&
+                (string.Equals(config.Compression, "lz4", StringComparison.OrdinalIgnoreCase) ||
+                 string.IsNullOrEmpty(config.Compression)))
+            {
+                return input;
+            }
 
             using var output = new MemoryStream();
             using (Stream compressionStream = config.Compression?.ToLower() switch

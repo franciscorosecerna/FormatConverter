@@ -89,7 +89,6 @@ namespace FormatConverter.Bxml
             };
         }
 
-
         private void SerializeStreamBinary(IEnumerable<JToken> data, Stream output, int chunkSize, CancellationToken cancellationToken)
         {
             var buffer = new List<JToken>();

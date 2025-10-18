@@ -81,7 +81,7 @@ namespace FormatConverter.Cbor
                             if (showProgress && tokensProcessed % 100 == 0)
                             {
                                 var progress = (double)fileStream.Position / fileStream.Length * 100;
-                                Console.Error.Write($"\rProcessing: {progress:F1}% ({tokensProcessed} elements)");
+                                Logger.WriteInfo($"Processing: {progress:F1}% ({tokensProcessed} elements)");
                             }
 
                             yield return token;
@@ -90,7 +90,7 @@ namespace FormatConverter.Cbor
                         {
                             if (Config.IgnoreErrors)
                             {
-                                Console.Error.WriteLine($"\nWarning: {error.Message}");
+                                Logger.WriteWarning(error.Message);
                                 yield return CreateErrorToken(error, $"File: {path}");
                             }
                             else
@@ -124,7 +124,7 @@ namespace FormatConverter.Cbor
                 {
                     if (Config.IgnoreErrors)
                     {
-                        Console.Error.WriteLine($"\nWarning: {memoryStream.Length} bytes of incomplete CBOR data at end of file");
+                        Logger.WriteWarning($"{memoryStream.Length} bytes of incomplete CBOR data at end of file");
                         yield return CreateErrorToken(
                             new FormatException($"Incomplete CBOR data: {memoryStream.Length} bytes remaining"),
                             $"File: {path}");
@@ -137,7 +137,7 @@ namespace FormatConverter.Cbor
 
                 if (showProgress)
                 {
-                    Console.Error.WriteLine($"\rCompleted: {tokensProcessed} objects processed");
+                    Logger.WriteSuccess($"Completed: {tokensProcessed} objects processed");
                 }
             }
             finally
@@ -192,7 +192,7 @@ namespace FormatConverter.Cbor
         {
             if (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: CBOR parsing error: {ex.Message}");
+                Logger.WriteWarning($"CBOR parsing error: {ex.Message}");
                 return CreateErrorToken(ex, input);
             }
 
