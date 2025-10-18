@@ -151,6 +151,7 @@ namespace FormatConverter.Protobuf
                     }
                     catch (Exception ex) when (Config.IgnoreErrors)
                     {
+                        Logger.WriteWarning($"Protobuf serialization error in item {i}: {ex.Message}");
                         var errorBytes = CreateErrorOutputBytes(ex.Message, ex.GetType().Name, items[i]);
 
                         if (errorBytes.Length <= rentedBuffer.Length)
@@ -191,6 +192,7 @@ namespace FormatConverter.Protobuf
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
+                    Logger.WriteWarning($"Protobuf serialization error in item {i}: {ex.Message}");
                     var errorOutput = CreateErrorOutput(ex.Message, ex.GetType().Name, items[i]);
                     WriteFormattedToken(writer, errorOutput, ref isFirst, i < items.Count - 1);
                 }
@@ -231,6 +233,7 @@ namespace FormatConverter.Protobuf
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
+                Logger.WriteWarning($"Protobuf serialization error ignored: {ex.Message}");
                 return CreateErrorOutput(ex.Message, ex.GetType().Name, token);
             }
         }

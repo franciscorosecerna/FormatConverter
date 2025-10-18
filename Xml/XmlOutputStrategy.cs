@@ -26,6 +26,7 @@ namespace FormatConverter.Xml
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
+                Logger.WriteWarning($"XML serialization error ignored: {ex.Message}");
                 return CreateErrorXml(ex.Message);
             }
         }
@@ -115,6 +116,7 @@ namespace FormatConverter.Xml
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
+                    Logger.WriteWarning($"XML serialization error in item {i}: {ex.Message}");
                     var errorXml = CreateErrorElement($"item_{i}", ex.Message, ex.GetType().Name);
                     writer.Write(errorXml);
                 }

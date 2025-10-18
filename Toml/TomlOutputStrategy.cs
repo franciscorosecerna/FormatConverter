@@ -8,7 +8,7 @@ namespace FormatConverter.Toml
     public class TomlOutputStrategy : BaseOutputStrategy
     {
         private readonly StringBuilder _output = new();
-        private readonly HashSet<string> _writtenTables = new();
+        private readonly HashSet<string> _writtenTables = [];
 
         private const string DefaultArrayWrapperKey = "items";
 
@@ -55,6 +55,7 @@ namespace FormatConverter.Toml
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
+                Logger.WriteWarning($"TOML serialization error ignored: {ex.Message}");
                 return CreateErrorToml(ex.Message, ex.GetType().Name, processed);
             }
         }
@@ -153,6 +154,7 @@ namespace FormatConverter.Toml
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
+                    Logger.WriteWarning($"TOML serialization error in item {i}: {ex.Message}");
                     var errorToml = CreateErrorToml(ex.Message, ex.GetType().Name, items[i]);
                     writer.WriteLine(errorToml);
                 }
@@ -235,7 +237,7 @@ namespace FormatConverter.Toml
                 {
                     if (Config.IgnoreErrors)
                     {
-                        Console.Error.WriteLine($"Warning: Skipping property '{prop.Name}' - incompatible with TOML format");
+                        Logger.WriteWarning($"Skipping property '{prop.Name}' - incompatible with TOML format");
                         continue;
                     }
                     throw;
@@ -336,7 +338,7 @@ namespace FormatConverter.Toml
                     {
                         if (Config.IgnoreErrors)
                         {
-                            Console.Error.WriteLine($"Warning: Skipping property '{prop.Name}' - incompatible with TOML format");
+                            Logger.WriteWarning($"Skipping property '{prop.Name}' - incompatible with TOML format");
                             continue;
                         }
                         throw;
@@ -404,7 +406,7 @@ namespace FormatConverter.Toml
                 {
                     if (Config.IgnoreErrors)
                     {
-                        Console.Error.WriteLine($"Warning: Skipping property '{prop.Name}' - incompatible with TOML format");
+                        Logger.WriteWarning($"Skipping property '{prop.Name}' - incompatible with TOML format");
                         continue;
                     }
                     throw;

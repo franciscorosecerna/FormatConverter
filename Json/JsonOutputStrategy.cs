@@ -93,6 +93,7 @@ namespace FormatConverter.Json
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
+                    Logger.WriteWarning($"JSON serialization error in item {i}: {ex.Message}");
                     var errorObj = new JObject
                     {
                         ["error"] = ex.Message,
@@ -121,6 +122,7 @@ namespace FormatConverter.Json
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
+                Logger.WriteWarning($"JSON serialization error ignored: {ex.Message}");
                 return CreateErrorJson(ex.Message, ex.GetType().Name, token);
             }
         }
@@ -177,6 +179,7 @@ namespace FormatConverter.Json
             {
                 settings.Error = (s, e) =>
                 {
+                    Logger.WriteWarning($"JSON serialization error: {e.ErrorContext.Error.Message}");
                     e.ErrorContext.Handled = true;
                 };
             }

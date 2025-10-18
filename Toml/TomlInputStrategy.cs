@@ -25,9 +25,9 @@ namespace FormatConverter.Toml
                     if (!Config.IgnoreErrors)
                         throw new FormatException(string.Join("\n", result.Diagnostics));
 
-                    Console.Error.WriteLine("Warning: TOML parse errors ignored:");
+                    Logger.WriteWarning("TOML parse errors ignored:");
                     foreach (var diag in result.Diagnostics)
-                        Console.Error.WriteLine($"  {diag}");
+                        Logger.WriteWarning($"  {diag}");
                 }
 
                 var model = result.ToModel();
@@ -99,14 +99,14 @@ namespace FormatConverter.Toml
                     if (showProgress && count % 10 == 0)
                     {
                         var progress = (double)fileStream.Position / fileSize * 100;
-                        Console.Error.Write($"\rProcessing: {progress:F1}% ({count} items)");
+                        Logger.WriteInfo($"Processing: {progress:F1}% ({count} items)");
                     }
 
                     yield return token;
                 }
 
                 if (showProgress)
-                    Console.Error.WriteLine($"\rCompleted: {count} items processed");
+                    Logger.WriteInfo($"Completed: {count} items processed");
             }
             finally
             {
@@ -126,9 +126,9 @@ namespace FormatConverter.Toml
 
             if (result.HasErrors && Config.IgnoreErrors)
             {
-                Console.Error.WriteLine("Warning: TOML parse errors ignored:");
+                Logger.WriteWarning("TOML parse errors ignored:");
                 foreach (var diag in result.Diagnostics)
-                    Console.Error.WriteLine($"  {diag}");
+                    Logger.WriteWarning($"  {diag}");
             }
 
             var model = result.ToModel();
@@ -321,7 +321,7 @@ namespace FormatConverter.Toml
             {
                 if (Config.IgnoreErrors)
                 {
-                    Console.Error.WriteLine($"Warning: Maximum depth ({maxDepth}) exceeded at path '{path}'");
+                    Logger.WriteWarning($"Maximum depth ({maxDepth}) exceeded at path '{path}'");
                     return;
                 }
                 throw new FormatException($"Maximum nesting depth ({maxDepth}) exceeded at path '{path}'");
@@ -347,7 +347,7 @@ namespace FormatConverter.Toml
         {
             if (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: TOML parsing error ignored: {ex.Message}");
+                Logger.WriteWarning($"TOML parsing error ignored: {ex.Message}");
                 return CreateErrorToken(ex, input);
             }
             throw new FormatException(ex.Message, ex);

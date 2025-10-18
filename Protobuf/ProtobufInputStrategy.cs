@@ -93,7 +93,7 @@ namespace FormatConverter.Protobuf
                             if (showProgress && messagesProcessed % 100 == 0)
                             {
                                 var progress = (double)fileStream.Position / fileStream.Length * 100;
-                                Console.Error.Write($"\rProcessing: {progress:F1}% ({messagesProcessed} messages)");
+                                Logger.WriteInfo($"Processing: {progress:F1}% ({messagesProcessed} messages)");
                             }
 
                             if (Config.NoMetadata)
@@ -107,7 +107,7 @@ namespace FormatConverter.Protobuf
                         {
                             if (Config.IgnoreErrors)
                             {
-                                Console.Error.WriteLine($"\nWarning: {error.Message}");
+                                Logger.WriteWarning(error.Message);
                                 yield return CreateErrorToken(error, $"File: {path}, Offset: {fileStream.Position - accumulatorLength + processed}");
                                 processed += Math.Max(1, consumed);
                             }
@@ -137,7 +137,7 @@ namespace FormatConverter.Protobuf
                 {
                     if (Config.IgnoreErrors)
                     {
-                        Console.Error.WriteLine($"\nWarning: {accumulatorLength} bytes of incomplete Protobuf data at end of file");
+                        Logger.WriteWarning($"{accumulatorLength} bytes of incomplete Protobuf data at end of file");
                         yield return CreateErrorToken(
                             new FormatException($"Incomplete Protobuf data: {accumulatorLength} bytes remaining"),
                             $"File: {path}");
@@ -150,7 +150,7 @@ namespace FormatConverter.Protobuf
 
                 if (showProgress)
                 {
-                    Console.Error.WriteLine($"\rCompleted: {messagesProcessed} messages processed");
+                    Logger.WriteInfo($"Completed: {messagesProcessed} messages processed");
                 }
             }
             finally
@@ -317,7 +317,7 @@ namespace FormatConverter.Protobuf
         {
             if (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: Protobuf parsing error: {ex.Message}");
+                Logger.WriteWarning($"Protobuf parsing error: {ex.Message}");
                 return CreateErrorToken(ex, input);
             }
 

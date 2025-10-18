@@ -85,7 +85,7 @@ namespace FormatConverter.MessagePack
                             if (showProgress && tokensProcessed % 100 == 0)
                             {
                                 var progress = (double)fileStream.Position / fileStream.Length * 100;
-                                Console.Error.Write($"\rProcessing: {progress:F1}% ({tokensProcessed} elements)");
+                                Logger.WriteInfo($"Processing: {progress:F1}% ({tokensProcessed} elements)");
                             }
 
                             yield return token;
@@ -94,7 +94,7 @@ namespace FormatConverter.MessagePack
                         {
                             if (Config.IgnoreErrors)
                             {
-                                Console.Error.WriteLine($"\nWarning: {error.Message}");
+                                Logger.WriteWarning(error.Message);
                                 yield return CreateErrorToken(error, $"File: {path}");
                             }
                             else
@@ -131,7 +131,7 @@ namespace FormatConverter.MessagePack
                 {
                     if (Config.IgnoreErrors)
                     {
-                        Console.Error.WriteLine($"\nWarning: {memoryStream.Length} bytes of incomplete MessagePack data at end of file");
+                        Logger.WriteWarning($"{memoryStream.Length} bytes of incomplete MessagePack data at end of file");
                         yield return CreateErrorToken(
                             new FormatException($"Incomplete MessagePack data: {memoryStream.Length} bytes remaining"),
                             $"File: {path}");
@@ -144,7 +144,7 @@ namespace FormatConverter.MessagePack
 
                 if (showProgress)
                 {
-                    Console.Error.WriteLine($"\rCompleted: {tokensProcessed} objects processed");
+                    Logger.WriteInfo($"Completed: {tokensProcessed} objects processed");
                 }
             }
             finally
@@ -190,7 +190,7 @@ namespace FormatConverter.MessagePack
         {
             if (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: MessagePack parsing error: {ex.Message}");
+                Logger.WriteWarning($"MessagePack parsing error: {ex.Message}");
                 return CreateErrorToken(ex, input);
             }
 
@@ -378,6 +378,7 @@ namespace FormatConverter.MessagePack
                         }
                         catch (Exception ex) when (Config.IgnoreErrors)
                         {
+                            Logger.WriteWarning($"Error reading property '{prop.Name}': {ex.Message}");
                             result[prop.Name] = new JValue($"[Error reading property: {ex.Message}]");
                         }
                     }
@@ -389,6 +390,7 @@ namespace FormatConverter.MessagePack
             {
                 if (Config.IgnoreErrors)
                 {
+                    Logger.WriteWarning($"Failed to convert complex object: {ex.Message}");
                     return new JValue($"[Complex object: {obj.ToString()}]");
                 }
                 throw new FormatException($"Failed to convert complex object: {ex.Message}", ex);

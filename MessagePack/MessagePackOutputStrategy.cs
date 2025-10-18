@@ -154,6 +154,7 @@ namespace FormatConverter.MessagePack
                     }
                     catch (Exception ex) when (Config.IgnoreErrors)
                     {
+                        Logger.WriteWarning($"MessagePack serialization error in item {i}: {ex.Message}");
                         var errorBytes = CreateErrorOutputBytes(ex.Message, ex.GetType().Name, items[i], options);
 
                         if (errorBytes.Length <= rentedBuffer.Length)
@@ -221,6 +222,7 @@ namespace FormatConverter.MessagePack
                     }
                     catch (Exception ex) when (Config.IgnoreErrors)
                     {
+                        Logger.WriteWarning($"MessagePack serialization error in item {i}: {ex.Message}");
                         var errorOutput = CreateErrorOutput(ex.Message, ex.GetType().Name, items[i]);
 
                         if (!isFirst && !Config.Minify)
@@ -259,6 +261,7 @@ namespace FormatConverter.MessagePack
                 {
                     if (Config.IgnoreErrors)
                     {
+                        Logger.WriteWarning("Failed to convert token to object");
                         return CreateErrorOutput("Failed to convert token to object", "ConversionError", token);
                     }
                     throw new FormatException("Failed to convert JSON to object for MessagePack serialization");
@@ -271,6 +274,7 @@ namespace FormatConverter.MessagePack
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
+                Logger.WriteWarning($"MessagePack serialization error ignored: {ex.Message}");
                 return CreateErrorOutput(ex.Message, ex.GetType().Name, token);
             }
         }
@@ -279,7 +283,7 @@ namespace FormatConverter.MessagePack
         {
             try
             {
-                var bytes = result.StartsWith("0x") || result.All(c => char.IsDigit(c) 
+                var bytes = result.StartsWith("0x") || result.All(c => char.IsDigit(c)
                 || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || char.IsWhiteSpace(c))
                     ? ConvertFromHex(result)
                     : Convert.FromBase64String(result);

@@ -69,7 +69,7 @@ namespace FormatConverter.Json
                         if (showProgress && tokensProcessed % 100 == 0)
                         {
                             var progress = (double)fileStream.Position / fileSize * 100;
-                            Console.Error.Write($"\rProcessing: {progress:F1}% ({tokensProcessed} elements)");
+                            Logger.WriteInfo($"Processing: {progress:F1}% ({tokensProcessed} elements)");
                         }
 
                         yield return token;
@@ -79,7 +79,7 @@ namespace FormatConverter.Json
 
             if (showProgress)
             {
-                Console.Error.WriteLine($"\rCompleted: {tokensProcessed} objects processed");
+                Logger.WriteInfo($"Completed: {tokensProcessed} objects processed");
             }
         }
 
@@ -93,8 +93,8 @@ namespace FormatConverter.Json
             {
                 if (Config.IgnoreErrors)
                 {
-                    Console.Error.WriteLine($"Warning: JSON streaming error at line {jsonReader.LineNumber}, " +
-                                          $"position {jsonReader.LinePosition}: {ex.Message}");
+                    Logger.WriteWarning($"JSON streaming error at line {jsonReader.LineNumber}, " +
+                                      $"position {jsonReader.LinePosition}: {ex.Message}");
                     return CreateErrorToken(ex, jsonReader);
                 }
 
@@ -202,7 +202,7 @@ namespace FormatConverter.Json
         {
             if (Config.IgnoreErrors)
             {
-                Console.Error.WriteLine($"Warning: JSON parsing error: {ex.Message}");
+                Logger.WriteWarning($"JSON parsing error: {ex.Message}");
                 return CreateErrorToken(ex, input);
             }
 
