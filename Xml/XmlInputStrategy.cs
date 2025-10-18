@@ -1,5 +1,7 @@
 ﻿using FormatConverter.Interfaces;
 using Newtonsoft.Json.Linq;
+using System.Globalization;
+using System.Text;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -9,129 +11,382 @@ namespace FormatConverter.Xml
     {
         public override JToken Parse(string input)
         {
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                return Config.IgnoreErrors
+                    ? new JObject()
+                    : throw new ArgumentException("XML input cannot be null or empty", nameof(input));
+            }
+
+            var settings = CreateXmlReaderSettings();
+
             try
             {
-                var settings = new XmlReaderSettings
-                {
-                    IgnoreWhitespace = !Config.PrettyPrint,
-                    IgnoreComments = Config.NoMetadata,
-                    IgnoreProcessingInstructions = Config.NoMetadata
-                };
+                return ParseXmlDocument(input, settings);
+            }
+            catch (XmlException ex)
+            {
+                return HandleParsingError(ex, input);
+            }
+        }
 
-                var doc = XDocument.Parse(input, LoadOptions.PreserveWhitespace);
+        public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                throw new ArgumentException("Path cannot be null or empty.", nameof(path));
 
-                if (doc.Root == null)
+            if (!File.Exists(path))
+                throw new FileNotFoundException("Input file not found.", path);
+
+            return ParseStreamInternal(path, cancellationToken);
+        }
+
+        private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
+        {
+            using var fileStream = File.OpenRead(path);
+            using var streamReader = new StreamReader(fileStream, Config.Encoding ?? Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            using var xmlReader = XmlReader.Create(streamReader, CreateXmlReaderSettings());
+
+            var fileSize = fileStream.Length;
+            var showProgress = fileSize > 10_485_760;
+            var elementsProcessed = 0;
+
+            while (xmlReader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (xmlReader.NodeType == XmlNodeType.Element && !xmlReader.IsEmptyElement)
                 {
-                    throw new FormatException("XML document has no root element");
+                    var token = ReadXmlElement(xmlReader, path);
+
+                    if (token != null)
+                    {
+                        elementsProcessed++;
+
+                        if (showProgress && elementsProcessed % 100 == 0)
+                        {
+                            var progress = (double)fileStream.Position / fileSize * 100;
+                            Logger.WriteInfo($"Processing: {progress:F1}% ({elementsProcessed} elements)");
+                        }
+
+                        yield return token;
+                    }
                 }
+            }
 
-                var result = ConvertXElementToJToken(doc.Root);
+            if (showProgress)
+            {
+                Logger.WriteInfo($"Completed: {elementsProcessed} elements processed");
+            }
+        }
 
-                if (Config.SortKeys && result is JObject)
+        private JToken? ReadXmlElement(XmlReader xmlReader, string path)
+        {
+            try
+            {
+                if (XElement.ReadFrom(xmlReader) is XElement element)
                 {
-                    result = SortKeysRecursively(result);
+                    return ConvertXElementToJToken(element);
                 }
-
-                return result;
+                return null;
             }
             catch (XmlException ex)
             {
                 if (Config.IgnoreErrors)
                 {
-                    Console.WriteLine($"Warning: XML parsing error ignored: {ex.Message}");
-                    return new JObject
-                    {
-                        ["error"] = ex.Message,
-                        ["raw"] = input
-                    };
+                    Logger.WriteWarning($"XML error at line {ex.LineNumber}, " +
+                                      $"position {ex.LinePosition}: {ex.Message}");
+                    return CreateErrorToken(ex, xmlReader as IXmlLineInfo);
                 }
-                throw new FormatException($"Invalid XML: {ex.Message}", ex);
+
+                throw new FormatException(
+                    $"Invalid XML at line {ex.LineNumber}, position {ex.LinePosition}: {ex.Message}",
+                    ex);
             }
+            catch (Exception ex) when (Config.IgnoreErrors)
+            {
+                Logger.WriteWarning($"Unexpected error in {path}: {ex.Message}");
+                return CreateErrorToken(ex, path);
+            }
+        }
+
+        private XmlReaderSettings CreateXmlReaderSettings()
+        {
+            var settings = new XmlReaderSettings
+            {
+                IgnoreWhitespace = !Config.PrettyPrint,
+                IgnoreComments = Config.NoMetadata,
+                IgnoreProcessingInstructions = Config.NoMetadata,
+                DtdProcessing = Config.StrictMode ? DtdProcessing.Parse : DtdProcessing.Ignore,
+                ValidationFlags = Config.StrictMode
+                    ? System.Xml.Schema.XmlSchemaValidationFlags.ReportValidationWarnings
+                    : System.Xml.Schema.XmlSchemaValidationFlags.None,
+                MaxCharactersInDocument = 0
+            };
+
+            if (Config.MaxDepth.HasValue)
+            {
+                settings.MaxCharactersInDocument = Config.MaxDepth.Value * 1000;
+            }
+
+            return settings;
+        }
+
+        private JToken ParseXmlDocument(string input, XmlReaderSettings settings)
+        {
+            var loadOptions = Config.PrettyPrint
+                ? LoadOptions.PreserveWhitespace
+                : LoadOptions.None;
+
+            var doc = XDocument.Parse(input, loadOptions);
+
+            if (doc.Root == null)
+            {
+                throw new FormatException("XML document has no root element");
+            }
+
+            return ConvertXElementToJToken(doc.Root);
+        }
+
+        private JObject HandleParsingError(XmlException ex, string input)
+        {
+            if (Config.IgnoreErrors)
+            {
+                Logger.WriteWarning($"XML parsing error: {ex.Message}");
+                return CreateErrorToken(ex, input);
+            }
+
+            throw new FormatException($"Invalid XML: {ex.Message}", ex);
         }
 
         private JToken ConvertXElementToJToken(XElement element)
         {
-            var result = new JObject();
+            var typeAttr = element.Attribute("type")?.Value;
+            var itemTypeAttr = element.Attribute("itemType")?.Value;
 
-            if (element.HasAttributes)
+            if (typeAttr == "array")
             {
-                foreach (var attr in element.Attributes().Where(a => !a.IsNamespaceDeclaration))
-                {
-                    var key = Config.XmlUseAttributes ? $"@{attr.Name.LocalName}" : attr.Name.LocalName;
-                    result[key] = new JValue(ConvertValue(attr.Value));
-                }
+                return ConvertArrayElement(element, itemTypeAttr);
+            }
+
+            if (element.Name.LocalName == "item" && typeAttr != null)
+            {
+                return ConvertTypedValue(element.Value?.Trim() ?? string.Empty, typeAttr);
+            }
+
+            var obj = new JObject();
+
+            foreach (var attr in element.Attributes().Where(a =>
+                !a.IsNamespaceDeclaration &&
+                a.Name.LocalName != "type" &&
+                a.Name.LocalName != "itemType"))
+            {
+                obj[$"@{attr.Name.LocalName}"] = attr.Value;
             }
 
             var childElements = element.Elements().ToList();
-            var childGroups = childElements.GroupBy(e => e.Name.LocalName);
 
-            foreach (var group in childGroups)
+            if (childElements.Count > 0)
             {
-                var children = group.ToList();
-                if (children.Count == 1)
+                var grouped = childElements.GroupBy(e => e.Name.LocalName);
+
+                foreach (var group in grouped)
                 {
-                    var child = children.First();
-                    if (child.HasElements || child.HasAttributes)
+                    if (group.Key == "item" && group.All(e => e.Name.LocalName == "item"))
                     {
-                        result[child.Name.LocalName] = ConvertXElementToJToken(child);
+                        var array = new JArray();
+                        foreach (var item in group)
+                        {
+                            array.Add(ConvertXElementToJToken(item));
+                        }
+                        return array;
+                    }
+                    else if (group.Count() == 1)
+                    {
+                        var child = group.First();
+                        var childTypeAttr = child.Attribute("type")?.Value;
+
+                        if (childTypeAttr != null && child.Elements().Count() == 0)
+                        {
+                            obj[group.Key] = ConvertTypedValue(child.Value?.Trim() ?? string.Empty, childTypeAttr);
+                        }
+                        else
+                        {
+                            obj[group.Key] = ConvertXElementToJToken(child);
+                        }
                     }
                     else
                     {
-                        result[child.Name.LocalName] = new JValue(ConvertValue(child.Value));
+                        var array = new JArray(group.Select(ConvertXElementToJToken));
+                        obj[group.Key] = array;
                     }
+                }
+            }
+
+            if (childElements.Count == 0)
+            {
+                var text = element.Value?.Trim();
+
+                if (typeAttr == "array" && (itemTypeAttr == "empty" || string.IsNullOrEmpty(text)))
+                {
+                    return new JArray();
+                }
+
+                if (!string.IsNullOrEmpty(text))
+                {
+                    if (typeAttr != null)
+                    {
+                        return ConvertTypedValue(text, typeAttr);
+                    }
+                    else
+                    {
+                        obj["#text"] = text;
+                    }
+                }
+                else if (typeAttr == "null")
+                {
+                    return JValue.CreateNull();
+                }
+            }
+
+            if (obj.Count == 1 && obj.ContainsKey("#text"))
+            {
+                return obj["#text"]!;
+            }
+
+            return obj;
+        }
+
+        private JArray ConvertArrayElement(XElement element, string? itemType)
+        {
+            var array = new JArray();
+            var items = element.Elements("item");
+
+            foreach (var item in items)
+            {
+                var itemTypeAttr = item.Attribute("type")?.Value ?? itemType;
+
+                if (itemTypeAttr != null && !item.Elements().Any())
+                {
+                    var value = item.Value?.Trim() ?? string.Empty;
+                    array.Add(ConvertTypedValue(value, itemTypeAttr));
                 }
                 else
                 {
-                    var array = new JArray();
-                    foreach (var child in children)
-                    {
-                        array.Add(ConvertXElementToJToken(child));
-                    }
-                    result[group.Key] = array;
+                    array.Add(ConvertXElementToJToken(item));
                 }
             }
 
-            if (!element.HasElements && !element.HasAttributes && !string.IsNullOrWhiteSpace(element.Value))
-            {
-                return new JValue(ConvertValue(element.Value));
-            }
-
-            if (!element.HasElements && element.HasAttributes && !string.IsNullOrWhiteSpace(element.Value))
-            {
-                result["#text"] = new JValue(ConvertValue(element.Value));
-            }
-
-            return result.Count == 1 && result["#text"] != null ? result["#text"] : result;
+            return array;
         }
 
-        private static object ConvertValue(string value)
+        private JToken ConvertTypedValue(string value, string type)
         {
-            if (bool.TryParse(value, out bool boolVal)) return boolVal;
-            if (int.TryParse(value, out int intVal)) return intVal;
-            if (double.TryParse(value, out double doubleVal)) return doubleVal;
-            if (DateTime.TryParse(value, out DateTime dateVal)) return dateVal;
+            if (string.IsNullOrEmpty(value) && type != "string")
+            {
+                return type == "null" ? JValue.CreateNull() : new JValue(string.Empty);
+            }
 
-            return value;
+            try
+            {
+                return type.ToLowerInvariant() switch
+                {
+                    "null" => JValue.CreateNull(),
+                    "boolean" => new JValue(ParseBoolean(value)),
+                    "integer" => new JValue(ParseInteger(value)),
+                    "number" => new JValue(ParseNumber(value)),
+                    "string" => new JValue(value),
+                    "date" => new JValue(ParseDate(value)),
+                    "bytes" => new JValue(value),
+                    "guid" => new JValue(ParseGuid(value)),
+                    "uri" => new JValue(new Uri(value)),
+                    "timespan" => new JValue(TimeSpan.Parse(value)),
+                    "empty" => new JArray(),
+                    "mixed" => new JValue(value),
+                    _ => new JValue(value)
+                };
+            }
+            catch (Exception ex) when (Config.IgnoreErrors)
+            {
+                Logger.WriteWarning($"Failed to convert '{value}' to type '{type}': {ex.Message}");
+                return new JValue(value);
+            }
         }
 
-        private JToken SortKeysRecursively(JToken token)
+        private static bool ParseBoolean(string value)
         {
-            return token.Type switch
+            return value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                   value.Equals("True", StringComparison.Ordinal) ||
+                   value == "1";
+        }
+
+        private static long ParseInteger(string value)
+        {
+            if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result))
+                return result;
+
+            return long.Parse(value, NumberStyles.Integer, CultureInfo.CurrentCulture);
+        }
+
+        private static double ParseNumber(string value)
+        {
+            var normalized = value.Replace(',', '.');
+
+            if (double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out var result))
+                return result;
+
+            return double.Parse(value, NumberStyles.Float, CultureInfo.CurrentCulture);
+        }
+
+        private static DateTime ParseDate(string value)
+        {
+            if (DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var result))
+                return result;
+
+            return DateTime.Parse(value, CultureInfo.CurrentCulture, DateTimeStyles.RoundtripKind);
+        }
+
+        private static Guid ParseGuid(string value)
+            => Guid.Parse(value);
+
+        private static JObject CreateErrorToken(XmlException ex, IXmlLineInfo? lineInfo)
+        {
+            return new JObject
             {
-                JTokenType.Object => SortJObject((JObject)token),
-                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
-                _ => token
+                ["error"] = ex.Message,
+                ["error_type"] = ex.GetType().Name,
+                ["line"] = lineInfo?.LineNumber ?? ex.LineNumber,
+                ["position"] = lineInfo?.LinePosition ?? ex.LinePosition,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
             };
         }
 
-        private JObject SortJObject(JObject obj)
+        private static JObject CreateErrorToken(XmlException ex, string input)
         {
-            var sorted = new JObject();
-            foreach (var property in obj.Properties().OrderBy(p => p.Name))
+            var snippet = input.Length > 1000
+                ? string.Concat(input.AsSpan(0, 1000), "...")
+                : input;
+
+            return new JObject
             {
-                sorted[property.Name] = SortKeysRecursively(property.Value);
-            }
-            return sorted;
+                ["error"] = ex.Message,
+                ["error_type"] = ex.GetType().Name,
+                ["line"] = ex.LineNumber,
+                ["position"] = ex.LinePosition,
+                ["raw_snippet"] = snippet,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
+            };
+        }
+
+        private static JObject CreateErrorToken(Exception ex, string path)
+        {
+            return new JObject
+            {
+                ["error"] = ex.Message,
+                ["error_type"] = ex.GetType().Name,
+                ["source"] = path,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
+            };
         }
     }
 }

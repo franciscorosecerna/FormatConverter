@@ -1,6 +1,8 @@
-﻿using FormatConverter.Interfaces;
+﻿using FormatConverter.Cbor.CborReader;
+using FormatConverter.Interfaces;
 using Newtonsoft.Json.Linq;
 using PeterO.Cbor;
+using System.Buffers;
 
 namespace FormatConverter.Cbor
 {
@@ -8,61 +10,219 @@ namespace FormatConverter.Cbor
     {
         public override JToken Parse(string input)
         {
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                return Config.IgnoreErrors
+                    ? new JObject()
+                    : throw new ArgumentException("CBOR input cannot be null or empty", nameof(input));
+            }
+
             try
             {
-                if (string.IsNullOrEmpty(input))
-                {
-                    throw new FormatException("CBOR input is empty or null");
-                }
+                var bytes = DecodeInput(input);
+                var cborObj = CBORObject.DecodeFromBytes(bytes)
+                    ?? throw new FormatException("CBOR deserialization returned null");
 
-                byte[] bytes;
-                try
-                {
-                    bytes = Convert.FromBase64String(input);
-                }
-                catch (FormatException)
-                {
+                var token = ConvertCborToJToken(cborObj);
 
-                    bytes = ParseHexString(input);
-                }
-
-                var cborObj = CBORObject.DecodeFromBytes(bytes) 
-                    ?? throw new FormatException("CBOR object is null after decoding");
-
-                var result = ConvertCborToJToken(cborObj);
-
-                if (Config.SortKeys && result is JObject)
-                {
-                    result = SortKeysRecursively(result);
-                }
-
-                return result;
+                return token;
             }
-            catch (CBORException ex)
+            catch (Exception ex) when (ex is not FormatException && ex is not ArgumentException)
             {
-                if (Config.IgnoreErrors)
-                {
-                    Console.WriteLine($"Warning: CBOR parsing error ignored: {ex.Message}");
-                    return new JObject
-                    {
-                        ["error"] = ex.Message,
-                        ["raw"] = input
-                    };
-                }
-                throw new FormatException($"Invalid CBOR: {ex.Message}", ex);
+                return HandleParsingError(ex, input);
             }
-            catch (Exception ex) when (ex is not FormatException)
+        }
+
+        public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                throw new ArgumentException("Path cannot be null or empty.", nameof(path));
+
+            if (!File.Exists(path))
+                throw new FileNotFoundException("Input file not found.", path);
+
+            return ParseStreamInternal(path, cancellationToken);
+        }
+
+        private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
+        {
+            using var fileStream = File.OpenRead(path);
+
+            var fileSize = fileStream.Length;
+            var showProgress = fileSize > 10_485_760;
+
+            const int BufferSize = 8192;
+            var arrayPool = ArrayPool<byte>.Shared;
+            byte[] buffer = arrayPool.Rent(BufferSize);
+            using var memoryStream = new MemoryStream();
+
+            int bytesRead;
+            int tokensProcessed = 0;
+
+            try
             {
-                if (Config.IgnoreErrors)
+                while ((bytesRead = fileStream.Read(buffer, 0, BufferSize)) > 0)
                 {
-                    Console.WriteLine($"Warning: CBOR parsing error ignored: {ex.Message}");
-                    return new JObject
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    memoryStream.Write(buffer, 0, bytesRead);
+
+                    while (true)
                     {
-                        ["error"] = ex.Message,
-                        ["raw"] = input
-                    };
+                        var (success, token, consumed, error) = TryReadNextCborToken(
+                            memoryStream.GetBuffer(),
+                            (int)memoryStream.Length,
+                            path);
+
+                        if (success && token != null)
+                        {
+                            tokensProcessed++;
+
+                            if (showProgress && tokensProcessed % 100 == 0)
+                            {
+                                var progress = (double)fileStream.Position / fileStream.Length * 100;
+                                Logger.WriteInfo($"Processing: {progress:F1}% ({tokensProcessed} elements)");
+                            }
+
+                            yield return token;
+                        }
+                        else if (error != null)
+                        {
+                            if (Config.IgnoreErrors)
+                            {
+                                Logger.WriteWarning(error.Message);
+                                yield return CreateErrorToken(error, $"File: {path}");
+                            }
+                            else
+                            {
+                                throw error;
+                            }
+                        }
+
+                        if (consumed > 0)
+                        {
+                            var remaining = (int)(memoryStream.Length - consumed);
+                            if (remaining > 0)
+                            {
+                                var temp = memoryStream.GetBuffer();
+                                Buffer.BlockCopy(temp, consumed, temp, 0, remaining);
+                                memoryStream.SetLength(remaining);
+                            }
+                            else
+                            {
+                                memoryStream.SetLength(0);
+                            }
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
                 }
-                throw new FormatException($"CBOR parsing failed: {ex.Message}", ex);
+
+                if (memoryStream.Length > 0)
+                {
+                    if (Config.IgnoreErrors)
+                    {
+                        Logger.WriteWarning($"{memoryStream.Length} bytes of incomplete CBOR data at end of file");
+                        yield return CreateErrorToken(
+                            new FormatException($"Incomplete CBOR data: {memoryStream.Length} bytes remaining"),
+                            $"File: {path}");
+                    }
+                    else
+                    {
+                        throw new FormatException($"Incomplete CBOR object at end of file ({memoryStream.Length} bytes remaining)");
+                    }
+                }
+
+                if (showProgress)
+                {
+                    Logger.WriteSuccess($"Completed: {tokensProcessed} objects processed");
+                }
+            }
+            finally
+            {
+                arrayPool.Return(buffer);
+            }
+        }
+
+        private (bool success, JToken? token, int consumed, Exception? error)
+            TryReadNextCborToken(byte[] buffer, int length, string context)
+        {
+            if (length == 0)
+                return (false, null, 0, null);
+
+            try
+            {
+                var cborStream = new CborStreamReader(Config.CborAllowIndefiniteLength,
+                    Config.CborAllowMultipleContent,
+                    Config.MaxDepth!.Value);
+                var bytesNeeded = cborStream.CalculateObjectSize(buffer, length);
+
+                if (bytesNeeded < 0)
+                {
+                    return (false, null, 0, null);
+                }
+
+                if (bytesNeeded > length)
+                {
+                    return (false, null, 0, null);
+                }
+
+                var objectBytes = new byte[bytesNeeded];
+                Array.Copy(buffer, 0, objectBytes, 0, bytesNeeded);
+
+                var cborObj = CBORObject.DecodeFromBytes(objectBytes);
+                var token = ConvertCborToJToken(cborObj);
+
+                return (true, token, bytesNeeded, null);
+            }
+            catch (CBORException)
+            {
+                return (false, null, 0, null);
+            }
+            catch (Exception ex)
+            {
+                return (false, null, 0,
+                    new FormatException($"Unexpected CBOR error in {context}: {ex.Message}", ex));
+            }
+        }
+
+        private JObject HandleParsingError(Exception ex, string input)
+        {
+            if (Config.IgnoreErrors)
+            {
+                Logger.WriteWarning($"CBOR parsing error: {ex.Message}");
+                return CreateErrorToken(ex, input);
+            }
+
+            throw new FormatException($"Invalid CBOR: {ex.Message}", ex);
+        }
+
+        private static JObject CreateErrorToken(Exception ex, string context)
+        {
+            var snippet = context.Length > 1000
+                ? string.Concat(context.AsSpan(0, 1000), "...")
+                : context;
+
+            return new JObject
+            {
+                ["error"] = ex.Message,
+                ["error_type"] = ex.GetType().Name,
+                ["raw_snippet"] = snippet,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
+            };
+        }
+
+        private static byte[] DecodeInput(string input)
+        {
+            try
+            {
+                return Convert.FromBase64String(input);
+            }
+            catch (FormatException)
+            {
+                return ParseHexString(input);
             }
         }
 
@@ -71,57 +231,51 @@ namespace FormatConverter.Cbor
             hex = hex.Replace("0x", "").Replace(" ", "").Replace("-", "");
 
             if (hex.Length % 2 != 0)
-            {
                 throw new FormatException("Invalid hex string length");
-            }
 
             var bytes = new byte[hex.Length / 2];
+            var hexSpan = hex.AsSpan();
+
             for (int i = 0; i < bytes.Length; i++)
             {
-                bytes[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+                var slice = hexSpan.Slice(i * 2, 2);
+                bytes[i] = (byte)((GetHexValue(slice[0]) << 4) | GetHexValue(slice[1]));
             }
 
             return bytes;
+        }
+
+        private static int GetHexValue(char c)
+        {
+            return c switch
+            {
+                >= '0' and <= '9' => c - '0',
+                >= 'A' and <= 'F' => c - 'A' + 10,
+                >= 'a' and <= 'f' => c - 'a' + 10,
+                _ => throw new FormatException($"Invalid hex character: {c}")
+            };
         }
 
         private JToken ConvertCborToJToken(CBORObject cbor)
         {
             if (cbor == null) return JValue.CreateNull();
 
-            switch (cbor.Type)
+            return cbor.Type switch
             {
-                case CBORType.Map:
-                    return ConvertCborMapToJObject(cbor);
-
-                case CBORType.Array:
-                    return ConvertCborArrayToJArray(cbor);
-
-                case CBORType.TextString:
-                    return new JValue(cbor.AsString());
-
-                case CBORType.Integer:
-                    if (cbor.CanValueFitInInt64())
-                        return new JValue(cbor.AsInt64Value());
-                    return new JValue(cbor.AsNumber().ToInt64Checked().ToString());
-
-                case CBORType.FloatingPoint:
-                    return new JValue(cbor.AsDoubleValue());
-
-                case CBORType.Boolean:
-                    return new JValue(cbor.AsBoolean());
-
-                case CBORType.SimpleValue:
-                    if (cbor.IsNull) return JValue.CreateNull();
-                    if (cbor.IsUndefined) return JValue.CreateUndefined();
-                    return new JValue(cbor.SimpleValue);
-
-                case CBORType.ByteString:
-                    var bytes = cbor.GetByteString();
-                    return new JValue(Convert.ToBase64String(bytes));
-
-                default:
-                    return new JValue(cbor.ToString());
-            }
+                CBORType.Map => ConvertCborMapToJObject(cbor),
+                CBORType.Array => ConvertCborArrayToJArray(cbor),
+                CBORType.TextString => new JValue(cbor.AsString()),
+                CBORType.Integer => new JValue(cbor.CanValueFitInInt64()
+                    ? cbor.AsInt64Value()
+                    : cbor.ToObject<System.Numerics.BigInteger>().ToString()),
+                CBORType.FloatingPoint => new JValue(cbor.AsDoubleValue()),
+                CBORType.Boolean => new JValue(cbor.AsBoolean()),
+                CBORType.SimpleValue => cbor.IsNull ? JValue.CreateNull()
+                    : cbor.IsUndefined ? JValue.CreateUndefined()
+                    : new JValue(cbor.SimpleValue),
+                CBORType.ByteString => new JValue(Convert.ToBase64String(cbor.GetByteString())),
+                _ => new JValue(cbor.ToString())
+            };
         }
 
         private JObject ConvertCborMapToJObject(CBORObject cborMap)
@@ -159,26 +313,6 @@ namespace FormatConverter.Cbor
                 CBORType.ByteString => Convert.ToBase64String(key.GetByteString()),
                 _ => key.ToString()
             };
-        }
-
-        private JToken SortKeysRecursively(JToken token)
-        {
-            return token.Type switch
-            {
-                JTokenType.Object => SortJObject((JObject)token),
-                JTokenType.Array => new JArray(((JArray)token).Select(SortKeysRecursively)),
-                _ => token
-            };
-        }
-
-        private JObject SortJObject(JObject obj)
-        {
-            var sorted = new JObject();
-            foreach (var property in obj.Properties().OrderBy(p => p.Name))
-            {
-                sorted[property.Name] = SortKeysRecursively(property.Value);
-            }
-            return sorted;
         }
     }
 }

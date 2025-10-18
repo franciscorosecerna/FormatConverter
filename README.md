@@ -53,39 +53,57 @@ If you omit `-o <output-file>`, the tool auto-generates one with the correct ext
 - `--sort-keys` → sort object keys alphabetically
 #### JSON Specific
 
-- `--json-escape-unicode`
-- `--json-trailing-commas`
-- `--json-quote-names` (default: true)
-- `--json-single-quotes`
+- `--json-escape-unicode` → escape non-ASCII characters
+- `--json-allow-trailing-commas` → allow trailing commas
+- `--json-strict-property-names` → require quoted property names (default: true)
+- `--json-allow-single-quotes` → allow single quotes
 #### XML Specific
 
-- `--xml-root <name>`
-- `--xml-namespace <uri>`
-- `--xml-namespace-prefix <prefix>`
-- `--xml-declaration` / `--xml-standalone`
-- `--xml-cdata`
-- `--xml-attributes`
+- `--xml-root <name>` → custom root element name
+- `--xml-namespace <uri>` → namespace URI
+- `--xml-namespace-prefix <prefix>` → namespace prefix
+- `--xml-declaration` / `--xml-standalone` → include XML declaration / add standalone="yes"
+- `--xml-cdata` → wrap text in CDATA
+- `--xml-attributes` → convert properties to attributes
 #### YAML Specific
 
-- `--yaml-flow-style`
-- `--yaml-explicit-start` / `--yaml-explicit-end`
-- `--yaml-quote-strings`
-- `--yaml-canonical`
+- `--yaml-flow-style` → use flow (inline) style
+- `--yaml-explicit-start` / `--yaml-explicit-end` → add --- / ... markers
+- `--yaml-quote-strings` → quote all strings
+- `--yaml-canonical` → use canonical YAML
+- `--yaml-allow-duplicate-keys` → allow duplicate keys
 #### TOML Specific
 
-- `toml-array-of-tables` (Default: true)
-- `toml-multiline-strings` (Default: false)
-- `toml-strict-types` (Default: false)
+- `toml-array-of-tables` → use array-of-tables ([[table]]) (default: true)
+- `toml-multiline-strings` → use multiline strings
+- `toml-strict-types` → Enforce strict type conversion
+- `--toml-array-wrapper-key <key>` → wrap root arrays under a key (default: item)
+
+#### MessagePack
+- `--msgpack-contractless` → use contractless resolver (default: true)
+- `--msgpack-lz4` → enable LZ4 compression
+- `--msgpack-old-spec` → use legacy format
+
+#### CBOR
+- `--cbor-indefinite-length` → allow indefinite arrays/maps
+- `--cbor-multiple-content` → allow multiple top-level items
+- `--cbor-canonical` → use canonical encoding
+- `--cbor-tags` → preserve semantic tags
+- `--cbor-datetime-tag` → encode dates with CBOR datetime tags
+- `--cbor-bignum` → use big number tags for large integers
+
+#### BXML
+- `--bxml-endian <littleendian/bigendian>`
+- `--bxml-compressArrays` enable array compression (default: true)
+
 #### Other
 
-- `--compress <gzip|deflate|brotli>` → compress output (Base64 encoded)
-- `--compression-level <1-9>` (default: 6)
+- `--compress <gzip|deflate|brotli|lz4>` → compress output (Base64 encoded)
 - `--validate <schema>` → validate against schema file
 - `--strict` → fail on warnings
 - `--ignore-errors` → keep going even on non-critical errors
 - `--streaming` → stream large files
-- `--buffer-size <bytes>` (default: 4096)
-- `--number-format <decimal|hexadecimal|scientific>`
+- `--number-format <decimal|hexadecimal|scientific|raw|binary>`
 - `--date-format <format>` (e.g. yyyy-MM-dd, ISO8601)
 - `--timezone <tz>` (e.g. UTC, America/New_York)
 - `--array-wrap` → wrap single items in arrays

@@ -1,55 +1,64 @@
-﻿using FormatConverter.Interfaces;
+﻿using FormatConverter.Bxml.BxmlWriter;
+using FormatConverter.Interfaces;
 using Newtonsoft.Json.Linq;
+using System.Buffers;
 using System.Text;
 
 namespace FormatConverter.Bxml
 {
     public class BxmlOutputStrategy : BaseOutputStrategy
     {
-        private const int MAX_STRING_TABLE_SIZE = 100000;
-
         public override string Serialize(JToken data)
+        {
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+
+            var processed = PreprocessToken(data);
+            var result = SerializeRegular(processed);
+
+            if (Config.StrictMode)
+            {
+                ValidateBxml(result);
+            }
+
+            return result;
+        }
+
+        public override void SerializeStream(IEnumerable<JToken> data, Stream output, CancellationToken cancellationToken = default)
+        {
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+            if (output == null)
+                throw new ArgumentNullException(nameof(output));
+
+            var chunkSize = GetChunkSize();
+            var isBinaryOutput = IsBinaryOutput();
+
+            if (isBinaryOutput)
+            {
+                SerializeStreamBinary(data, output, chunkSize, cancellationToken);
+            }
+            else
+            {
+                SerializeStreamText(data, output, chunkSize, cancellationToken);
+            }
+        }
+
+        public void SerializeStream(IEnumerable<JToken> data, string outputPath, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrEmpty(outputPath))
+                throw new ArgumentNullException(nameof(outputPath));
+
+            using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192);
+            SerializeStream(data, fileStream, cancellationToken);
+        }
+
+        private string SerializeRegular(JToken data)
         {
             try
             {
-                using var buffer = new MemoryStream();
-                using var writer = new BinaryWriter(buffer);
-
-                writer.Write(Encoding.ASCII.GetBytes("BXML"));
-
-                var elements = new List<BxmlElement>();
-                var stringTable = new Dictionary<string, uint>();
-                uint stringIndex = 0;
-
-                uint AddString(string s)
-                {
-                    if (string.IsNullOrEmpty(s)) s = "";
-
-                    if (!stringTable.ContainsKey(s))
-                    {
-                        if (stringTable.Count >= MAX_STRING_TABLE_SIZE)
-                        {
-                            throw new FormatException($"String table size limit {MAX_STRING_TABLE_SIZE} exceeded");
-                        }
-                        stringTable[s] = stringIndex++;
-                    }
-                    return stringTable[s];
-                }
-
-                var rootElement = ConvertJsonToBxmlElement("Root", data, AddString);
-                elements.Add(rootElement);
-
-                writer.Write((uint)elements.Count);
-
-                foreach (var element in elements)
-                {
-                    WriteElement(writer, element);
-                }
-
-                WriteStringTable(writer, stringTable);
-
-                var result = buffer.ToArray();
-                return FormatOutput(result);
+                var bytes = SerializeToBxml(data);
+                return FormatOutput(bytes);
             }
             catch (Exception ex) when (ex is not FormatException)
             {
@@ -57,226 +66,207 @@ namespace FormatConverter.Bxml
             }
         }
 
-        private BxmlElement ConvertJsonToBxmlElement(string name, JToken token, Func<string, uint> addString)
+        private byte[] SerializeToBxml(JToken data)
         {
-            var element = new BxmlElement
+            using var stream = new MemoryStream();
+            var options = CreateBxmlOptions();
+
+            using var writer = new BxmlDocumentWriter(stream, options);
+            writer.WriteDocument(data, "Root");
+
+            return stream.ToArray();
+        }
+
+        private BxmlWriteOptions CreateBxmlOptions()
+        {
+            return new BxmlWriteOptions
             {
-                NameIndex = addString(name)
+                Encoding = Config.Encoding,
+                Endianness = Config.Endianness,
+                MaxDepth = Config.MaxDepth ?? 1000,
+                CompressArrays = Config.CompressArrays,
+                LeaveOpen = false
             };
+        }
 
-            switch (token.Type)
+        private void SerializeStreamBinary(IEnumerable<JToken> data, Stream output, int chunkSize, CancellationToken cancellationToken)
+        {
+            var buffer = new List<JToken>();
+            var options = CreateBxmlOptions();
+
+            foreach (var token in data)
             {
-                case JTokenType.Object:
-                    ConvertObjectToElement(element, (JObject)token, addString);
-                    break;
+                cancellationToken.ThrowIfCancellationRequested();
 
-                case JTokenType.Array:
-                    ConvertArrayToElement(element, (JArray)token, addString);
-                    break;
+                var processed = PreprocessToken(token);
+                buffer.Add(processed);
 
-                case JTokenType.String:
-                    ConvertStringToElement(element, token.Value<string>(), addString);
-                    break;
-
-                case JTokenType.Integer:
-                    ConvertIntegerToElement(element, token.Value<long>(), addString);
-                    break;
-
-                case JTokenType.Float:
-                    ConvertFloatToElement(element, token.Value<double>(), addString);
-                    break;
-
-                case JTokenType.Boolean:
-                    ConvertBooleanToElement(element, token.Value<bool>(), addString);
-                    break;
-
-                case JTokenType.Date:
-                    ConvertDateToElement(element, token.Value<DateTime>(), addString);
-                    break;
-
-                case JTokenType.Null:
-                    element.Attributes[addString("type")] = addString("null");
-                    break;
-
-                default:
-                    ConvertStringToElement(element, token.ToString(), addString);
-                    break;
-            }
-
-            return element;
-        }
-
-        private void ConvertObjectToElement(BxmlElement element, JObject obj, Func<string, uint> addString)
-        {
-            element.Attributes[addString("type")] = addString("object");
-
-            var properties = Config.SortKeys
-                ? obj.Properties().OrderBy(p => p.Name)
-                : obj.Properties();
-
-            foreach (var property in properties)
-            {
-                if (Config.NoMetadata && IsMetadataField(property.Name))
-                    continue;
-
-                var child = ConvertJsonToBxmlElement(property.Name, property.Value, addString);
-                element.Children.Add(child);
-            }
-        }
-
-        private void ConvertArrayToElement(BxmlElement element, JArray array, Func<string, uint> addString)
-        {
-            element.Attributes[addString("type")] = addString("array");
-
-            foreach (var item in array)
-            {
-                var child = ConvertJsonToBxmlElement("item", item, addString);
-                element.Children.Add(child);
-            }
-        }
-
-        private static void ConvertStringToElement(BxmlElement element, string? value, Func<string, uint> addString)
-        {
-            element.Attributes[addString("type")] = addString("string");
-            element.TextIndex = addString(value ?? "");
-        }
-
-        private void ConvertIntegerToElement(BxmlElement element, long value, Func<string, uint> addString)
-        {
-            var formattedValue = FormatIntegerValue(value);
-            var typeString = DetermineIntegerType(value);
-
-            element.Attributes[addString("type")] = addString(typeString);
-            element.TextIndex = addString(formattedValue);
-        }
-
-        private void ConvertFloatToElement(BxmlElement element, double value, Func<string, uint> addString)
-        {
-            var formattedValue = FormatNumberValue(value);
-            element.Attributes[addString("type")] = addString("float");
-            element.TextIndex = addString(formattedValue);
-        }
-
-        private static void ConvertBooleanToElement(BxmlElement element, bool value, Func<string, uint> addString)
-        {
-            element.Attributes[addString("type")] = addString("bool");
-            element.TextIndex = addString(value.ToString().ToLowerInvariant());
-        }
-
-        private void ConvertDateToElement(BxmlElement element, DateTime value, Func<string, uint> addString)
-        {
-            var formattedValue = FormatDateTime(value);
-            element.Attributes[addString("type")] = addString("date");
-            element.TextIndex = addString(formattedValue);
-        }
-
-        private static bool IsMetadataField(string fieldName)
-        {
-            return fieldName.StartsWith("_") ||
-                   fieldName.StartsWith("@") ||
-                   fieldName.StartsWith("$") ||
-                   fieldName.Equals("metadata", StringComparison.OrdinalIgnoreCase) ||
-                   fieldName.Equals("version", StringComparison.OrdinalIgnoreCase) ||
-                   fieldName.Equals("schema", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string DetermineIntegerType(long value)
-        {
-            if (value >= int.MinValue && value <= int.MaxValue)
-                return "int";
-            return "long";
-        }
-
-        private string FormatIntegerValue(long value)
-        {
-            if (!string.IsNullOrEmpty(Config.NumberFormat))
-            {
-                return Config.NumberFormat.ToLower() switch
+                if (buffer.Count >= chunkSize)
                 {
-                    "hexadecimal" => $"0x{value:X}",
-                    "scientific" => ((double)value).ToString("E"),
-                    _ => value.ToString()
-                };
+                    WriteChunkToStreamBinary(buffer, output, options, cancellationToken);
+                    buffer.Clear();
+                }
             }
-            return value.ToString();
+
+            if (buffer.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                WriteChunkToStreamBinary(buffer, output, options, cancellationToken);
+            }
+
+            output.Flush();
         }
 
-        private string FormatNumberValue(double value)
+        private void SerializeStreamText(IEnumerable<JToken> data, Stream output, int chunkSize, CancellationToken cancellationToken)
         {
-            if (!string.IsNullOrEmpty(Config.NumberFormat))
+            using var writer = new StreamWriter(output, Config.Encoding, 8192, leaveOpen: true);
+            var options = CreateBxmlOptions();
+
+            var buffer = new List<JToken>();
+            bool isFirst = true;
+
+            if (!Config.Minify)
             {
-                return Config.NumberFormat.ToLower() switch
+                writer.WriteLine("[");
+            }
+
+            foreach (var token in data)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var processed = PreprocessToken(token);
+                buffer.Add(processed);
+
+                if (buffer.Count >= chunkSize)
                 {
-                    "hexadecimal" => $"0x{(long)value:X}",
-                    "scientific" => value.ToString("E"),
-                    _ => value.ToString()
-                };
+                    WriteChunkToStreamText(buffer, writer, options, cancellationToken, ref isFirst);
+                    buffer.Clear();
+                }
             }
-            return value.ToString();
+
+            if (buffer.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                WriteChunkToStreamText(buffer, writer, options, cancellationToken, ref isFirst);
+            }
+
+            if (!Config.Minify)
+            {
+                writer.WriteLine();
+                writer.WriteLine("]");
+            }
+
+            writer.Flush();
         }
 
-        private string FormatDateTime(DateTime dateTime)
+        private void WriteChunkToStreamBinary(List<JToken> items, Stream output, BxmlWriteOptions options, CancellationToken ct)
         {
-            if (!string.IsNullOrEmpty(Config.DateFormat))
+            if (items.Count == 0) return;
+
+            const int initialBufferSize = 8192;
+            byte[]? rentedBuffer = null;
+
+            try
             {
-                return Config.DateFormat.ToLower() switch
+                rentedBuffer = ArrayPool<byte>.Shared.Rent(initialBufferSize);
+
+                for (int i = 0; i < items.Count; i++)
                 {
-                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                    "unix" => ((DateTimeOffset)dateTime).ToUnixTimeSeconds().ToString(),
-                    "rfc3339" => dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffK"),
-                    _ => dateTime.ToString(Config.DateFormat)
-                };
+                    ct.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        var bytes = SerializeToBxml(items[i]);
+
+                        if (bytes.Length <= rentedBuffer.Length)
+                        {
+                            Buffer.BlockCopy(bytes, 0, rentedBuffer, 0, bytes.Length);
+                            output.Write(rentedBuffer, 0, bytes.Length);
+                        }
+                        else
+                        {
+                            output.Write(bytes, 0, bytes.Length);
+                        }
+                    }
+                    catch (Exception ex) when (Config.IgnoreErrors)
+                    {
+                        var errorBytes = CreateErrorBxmlBytes(ex.Message, ex.GetType().Name, items[i]);
+
+                        if (errorBytes.Length <= rentedBuffer.Length)
+                        {
+                            Buffer.BlockCopy(errorBytes, 0, rentedBuffer, 0, errorBytes.Length);
+                            output.Write(rentedBuffer, 0, errorBytes.Length);
+                        }
+                        else
+                        {
+                            output.Write(errorBytes, 0, errorBytes.Length);
+                        }
+                    }
+                }
             }
-
-            return dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fff");
-        }
-
-        private void WriteElement(BinaryWriter writer, BxmlElement element)
-        {
-            writer.Write((byte)1);
-
-            writer.Write(element.NameIndex);
-
-            writer.Write((uint)element.Attributes.Count);
-
-            var attributes = Config.SortKeys
-                ? element.Attributes.OrderBy(kvp => kvp.Key)
-                : element.Attributes.AsEnumerable();
-
-            foreach (var attr in attributes)
+            finally
             {
-                writer.Write(attr.Key);
-                writer.Write(attr.Value);
-            }
-
-            if (element.TextIndex.HasValue)
-            {
-                writer.Write((byte)1);
-                writer.Write(element.TextIndex.Value);
-            }
-            else
-            {
-                writer.Write((byte)0);
-            }
-
-            writer.Write((uint)element.Children.Count);
-            foreach (var child in element.Children)
-            {
-                WriteElement(writer, child);
+                if (rentedBuffer != null)
+                {
+                    ArrayPool<byte>.Shared.Return(rentedBuffer);
+                }
             }
         }
 
-        private static void WriteStringTable(BinaryWriter writer, Dictionary<string, uint> stringTable)
+        private void WriteChunkToStreamText(List<JToken> items, StreamWriter writer, BxmlWriteOptions options, CancellationToken ct, ref bool isFirst)
         {
-            writer.Write((uint)stringTable.Count);
+            if (items.Count == 0) return;
 
-            var sortedStrings = stringTable.OrderBy(kvp => kvp.Value).Select(kvp => kvp.Key).ToArray();
-
-            foreach (var str in sortedStrings)
+            for (int i = 0; i < items.Count; i++)
             {
-                byte[] strBytes = Encoding.UTF8.GetBytes(str);
-                writer.Write((uint)strBytes.Length);
-                writer.Write(strBytes);
+                ct.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var bytes = SerializeToBxml(items[i]);
+                    var formatted = FormatOutput(bytes);
+
+                    if (!isFirst && !Config.Minify)
+                    {
+                        writer.Write(",");
+                        writer.WriteLine();
+                    }
+                    else if (isFirst)
+                    {
+                        isFirst = false;
+                    }
+
+                    if (Config.Minify)
+                    {
+                        writer.Write(formatted);
+                        if (i < items.Count - 1)
+                            writer.Write(",");
+                    }
+                    else
+                    {
+                        writer.Write("  ");
+                        writer.Write(formatted);
+                    }
+                }
+                catch (Exception ex) when (Config.IgnoreErrors)
+                {
+                    var errorOutput = CreateErrorOutput(ex.Message, ex.GetType().Name, items[i]);
+
+                    if (!isFirst && !Config.Minify)
+                    {
+                        writer.Write(",");
+                        writer.WriteLine();
+                    }
+                    else if (isFirst)
+                    {
+                        isFirst = false;
+                    }
+
+                    if (!Config.Minify)
+                        writer.Write("  ");
+
+                    writer.Write(errorOutput);
+                }
             }
         }
 
@@ -286,32 +276,244 @@ namespace FormatConverter.Bxml
             {
                 "hex" or "hexadecimal" => FormatAsHex(bytes),
                 "binary" => FormatAsBinary(bytes),
+                "raw" => Encoding.UTF8.GetString(bytes),
                 _ => Convert.ToBase64String(bytes)
             };
         }
 
         private string FormatAsHex(byte[] bytes)
         {
-            var hex = Convert.ToHexString(bytes);
+            const int stackAllocThreshold = 256;
 
-            if (Config.PrettyPrint && !Config.Minify)
+            if (bytes.Length <= stackAllocThreshold)
             {
-                return string.Join(" ",
-                    Enumerable.Range(0, hex.Length / 2)
-                    .Select(i => hex.Substring(i * 2, 2)));
-            }
+                Span<char> hexChars = stackalloc char[bytes.Length * 2];
+                for (int i = 0; i < bytes.Length; i++)
+                {
+                    bytes[i].TryFormat(hexChars.Slice(i * 2, 2), out _, "x2");
+                }
 
-            return hex.ToLowerInvariant();
+                if (Config.PrettyPrint && !Config.Minify)
+                {
+                    return FormatHexWithSpaces(hexChars);
+                }
+
+                return new string(hexChars);
+            }
+            else
+            {
+                var hex = Convert.ToHexString(bytes);
+
+                if (Config.PrettyPrint && !Config.Minify)
+                {
+                    return string.Join(" ",
+                        Enumerable.Range(0, hex.Length / 2)
+                        .Select(i => hex.Substring(i * 2, 2)));
+                }
+
+                return hex.ToLowerInvariant();
+            }
+        }
+
+        private static string FormatHexWithSpaces(ReadOnlySpan<char> hexChars)
+        {
+            char[]? buffer = null;
+            try
+            {
+                int resultLength = hexChars.Length + (hexChars.Length / 2) - 1;
+                buffer = ArrayPool<char>.Shared.Rent(resultLength);
+                Span<char> result = buffer.AsSpan(0, resultLength);
+
+                int writePos = 0;
+                for (int i = 0; i < hexChars.Length; i += 2)
+                {
+                    if (writePos > 0)
+                    {
+                        result[writePos++] = ' ';
+                    }
+                    result[writePos++] = hexChars[i];
+                    result[writePos++] = hexChars[i + 1];
+                }
+
+                return new string(result);
+            }
+            finally
+            {
+                if (buffer != null)
+                {
+                    ArrayPool<char>.Shared.Return(buffer);
+                }
+            }
         }
 
         private string FormatAsBinary(byte[] bytes)
         {
-            if (Config.PrettyPrint && !Config.Minify)
+            const int bitsPerByte = 8;
+            int totalChars = bytes.Length * bitsPerByte;
+
+            char[]? buffer = null;
+            try
             {
-                return string.Join(" ", bytes.Select(b => Convert.ToString(b, 2).PadLeft(8, '0')));
+                if (Config.PrettyPrint && !Config.Minify)
+                {
+                    int sizeNeeded = totalChars + bytes.Length - 1;
+                    buffer = ArrayPool<char>.Shared.Rent(sizeNeeded);
+                    Span<char> span = buffer.AsSpan(0, sizeNeeded);
+
+                    int pos = 0;
+                    for (int i = 0; i < bytes.Length; i++)
+                    {
+                        if (i > 0)
+                        {
+                            span[pos++] = ' ';
+                        }
+
+                        byte b = bytes[i];
+                        for (int bit = 7; bit >= 0; bit--)
+                        {
+                            span[pos++] = ((b >> bit) & 1) == 1 ? '1' : '0';
+                        }
+                    }
+
+                    return new string(span);
+                }
+                else
+                {
+                    buffer = ArrayPool<char>.Shared.Rent(totalChars);
+                    Span<char> span = buffer.AsSpan(0, totalChars);
+
+                    int pos = 0;
+                    for (int i = 0; i < bytes.Length; i++)
+                    {
+                        byte b = bytes[i];
+                        for (int bit = 7; bit >= 0; bit--)
+                        {
+                            span[pos++] = ((b >> bit) & 1) == 1 ? '1' : '0';
+                        }
+                    }
+
+                    return new string(span);
+                }
+            }
+            finally
+            {
+                if (buffer != null)
+                {
+                    ArrayPool<char>.Shared.Return(buffer);
+                }
+            }
+        }
+
+        private byte[] CreateErrorBxmlBytes(string errorMessage, string errorType, JToken originalToken)
+        {
+            try
+            {
+                var errorObj = new JObject
+                {
+                    ["error"] = errorMessage,
+                    ["error_type"] = errorType,
+                    ["original_type"] = originalToken.Type.ToString(),
+                    ["timestamp"] = DateTime.UtcNow.ToString("O")
+                };
+
+                return SerializeToBxml(errorObj);
+            }
+            catch
+            {
+                var fallbackError = new JObject
+                {
+                    ["error"] = "Error serialization failed",
+                    ["original_error"] = errorMessage,
+                    ["timestamp"] = DateTime.UtcNow.ToString("O")
+                };
+
+                return Config.Encoding.GetBytes(fallbackError.ToString(Newtonsoft.Json.Formatting.None));
+            }
+        }
+
+        private string CreateErrorOutput(string errorMessage, string errorType, JToken originalToken)
+        {
+            try
+            {
+                var errorBytes = CreateErrorBxmlBytes(errorMessage, errorType, originalToken);
+                return FormatOutput(errorBytes);
+            }
+            catch
+            {
+                var errorObj = new JObject
+                {
+                    ["error"] = errorMessage,
+                    ["error_type"] = errorType,
+                    ["original_type"] = originalToken.Type.ToString(),
+                    ["timestamp"] = DateTime.UtcNow.ToString("O")
+                };
+
+                var errorBytes = Config.Encoding.GetBytes(errorObj.ToString(Newtonsoft.Json.Formatting.None));
+                return Convert.ToBase64String(errorBytes);
+            }
+        }
+        
+        private void ValidateBxml(string result)
+        {
+            if (!Config.StrictMode) return;
+
+            try
+            {
+                byte[] bytes;
+
+                if (result.StartsWith("0x") || result.All(c => char.IsDigit(c)
+                    || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || char.IsWhiteSpace(c)))
+                {
+                    bytes = ConvertFromHex(result);
+                }
+                else if (result.All(c => c == '0' || c == '1' || char.IsWhiteSpace(c)))
+                {
+                    bytes = ConvertFromBinary(result);
+                }
+                else
+                {
+                    bytes = Convert.FromBase64String(result);
+                }
+
+                if (bytes.Length < 4)
+                    throw new FormatException("Invalid BXML: too short");
+
+                var magic = Encoding.ASCII.GetString(bytes, 0, 4);
+                if (magic != "BXML")
+                    throw new FormatException($"Invalid BXML magic: expected 'BXML', got '{magic}'");
+            }
+            catch (Exception ex) when (Config.StrictMode)
+            {
+                throw new FormatException($"BXML validation failed: {ex.Message}", ex);
+            }
+        }
+
+        private static byte[] ConvertFromHex(string hex)
+        {
+            hex = hex.Replace("0x", "").Replace(" ", "").Replace("\n", "").Replace("\r", "");
+            return Convert.FromHexString(hex);
+        }
+
+        private static byte[] ConvertFromBinary(string binary)
+        {
+            binary = binary.Replace(" ", "").Replace("\n", "").Replace("\r", "");
+            var byteCount = binary.Length / 8;
+            var bytes = new byte[byteCount];
+
+            for (int i = 0; i < byteCount; i++)
+            {
+                bytes[i] = Convert.ToByte(binary.Substring(i * 8, 8), 2);
             }
 
-            return string.Concat(bytes.Select(b => Convert.ToString(b, 2).PadLeft(8, '0')));
+            return bytes;
         }
+
+        private bool IsBinaryOutput()
+        {
+            var format = Config.NumberFormat?.ToLower();
+            return format == "raw" || string.IsNullOrEmpty(format);
+        }
+
+        private int GetChunkSize() => Config.ChunkSize > 0 ? Config.ChunkSize : 100;
     }
 }
