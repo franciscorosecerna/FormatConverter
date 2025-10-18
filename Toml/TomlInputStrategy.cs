@@ -31,8 +31,16 @@ namespace FormatConverter.Toml
                 }
 
                 var model = result.ToModel();
-
                 var token = ConvertToJToken(model);
+
+                if (token is JObject obj && obj.Count == 1)
+                {
+                    var firstProp = obj.Properties().First();
+                    if (firstProp.Value is JArray)
+                    {
+                        return firstProp.Value;
+                    }
+                }
 
                 return token;
             }
@@ -91,14 +99,14 @@ namespace FormatConverter.Toml
                     if (showProgress && count % 10 == 0)
                     {
                         var progress = (double)fileStream.Position / fileSize * 100;
-                        Console.Error.Write($"\rProcessing: {progress:F1}% ({count} tables)");
+                        Console.Error.Write($"\rProcessing: {progress:F1}% ({count} items)");
                     }
 
                     yield return token;
                 }
 
                 if (showProgress)
-                    Console.Error.WriteLine($"\rCompleted: {count} tables processed");
+                    Console.Error.WriteLine($"\rCompleted: {count} items processed");
             }
             finally
             {
@@ -124,21 +132,88 @@ namespace FormatConverter.Toml
             }
 
             var model = result.ToModel();
-
-            if (model is TomlTable rootTable && rootTable.Count > 3)
+            if (model is TomlTable rootTable)
             {
-                foreach (var (key, value) in rootTable)
+                if (rootTable.Count == 1)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    var singleEntry = rootTable.First();
+                    if (singleEntry.Value is TomlTableArray tableArray)
+                    {
+                        foreach (var table in tableArray)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            var token = ConvertToJToken(table);
 
-                    var token = ConvertToJToken(value);
+                            if (Config.MaxDepth > 0)
+                            {
+                                ValidateDepth(token, Config.MaxDepth.Value, $"{singleEntry.Key}[]");
+                            }
+
+                            yield return token;
+                        }
+                        yield break;
+                    }
+                }
+
+                var hasArrayOfTables = rootTable.Values.OfType<TomlTableArray>().Any();
+                if (hasArrayOfTables)
+                {
+                    foreach (var (key, value) in rootTable)
+                    {
+                        if (value is TomlTableArray tableArray)
+                        {
+                            foreach (var table in tableArray)
+                            {
+                                cancellationToken.ThrowIfCancellationRequested();
+                                var token = ConvertToJToken(table);
+
+                                if (Config.MaxDepth > 0)
+                                {
+                                    ValidateDepth(token, Config.MaxDepth.Value, $"{key}[]");
+                                }
+
+                                yield return token;
+                            }
+                        }
+                        else
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            var token = ConvertToJToken(value);
+
+                            if (Config.MaxDepth > 0)
+                            {
+                                ValidateDepth(token, Config.MaxDepth.Value, key);
+                            }
+
+                            yield return new JObject { [key] = token };
+                        }
+                    }
+                }
+                else if (rootTable.Count > 3)
+                {
+                    foreach (var (key, value) in rootTable)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var token = ConvertToJToken(value);
+
+                        if (Config.MaxDepth > 0)
+                        {
+                            ValidateDepth(token, Config.MaxDepth.Value, key);
+                        }
+
+                        yield return new JObject { [key] = token };
+                    }
+                }
+                else
+                {
+                    var token = ConvertToJToken(model);
 
                     if (Config.MaxDepth > 0)
                     {
-                        ValidateDepth(token, Config.MaxDepth.Value, key);
+                        ValidateDepth(token, Config.MaxDepth.Value, "root");
                     }
 
-                    yield return new JObject { [key] = token };
+                    yield return token;
                 }
             }
             else
@@ -159,7 +234,9 @@ namespace FormatConverter.Toml
             return value switch
             {
                 null => JValue.CreateNull(),
+                "" => JValue.CreateNull(),
                 TomlTable table => ConvertTableToJObject(table),
+                TomlTableArray tableArray => ConvertTableArrayToJArray(tableArray),
                 TomlArray array => ConvertArrayToJArray(array),
                 string s => new JValue(s),
                 bool b => new JValue(b),
@@ -168,11 +245,31 @@ namespace FormatConverter.Toml
                 double d => new JValue(d),
                 float f => new JValue(f),
                 decimal dec => new JValue(dec),
-                DateTime dt => new JValue(dt),
-                DateTimeOffset dto => new JValue(dto),
-                TomlDateTime tdt => new JValue(tdt.DateTime),
-                _ => JToken.FromObject(value)
+                DateTimeOffset dto => new JValue(dto.DateTime.ToString("yyyy-MM-ddTHH:mm:ss")),
+                DateTime dt => new JValue(dt.ToString("yyyy-MM-ddTHH:mm:ss")),
+                TomlDateTime tdt => ConvertTomlDateTime(tdt),
+                _ => throw new FormatException($"Unsupported TOML type: {value?.GetType().Name ?? "null"}")
             };
+        }
+
+        private static JValue ConvertTomlDateTime(TomlDateTime tomlDateTime)
+        {
+            try
+            {
+                var dt = tomlDateTime.DateTime;
+                if (dt != default(DateTime))
+                {
+                    return new JValue(dt);
+                }
+            }
+            catch { }
+
+            var str = tomlDateTime.ToString();
+            if (str.Length > 19 && (str[19] == '+' || str[19] == '-'))
+            {
+                str = str.Substring(0, 19);
+            }
+            return new JValue(str);
         }
 
         private JObject ConvertTableToJObject(TomlTable table)
@@ -185,12 +282,35 @@ namespace FormatConverter.Toml
             return obj;
         }
 
+        private JArray ConvertTableArrayToJArray(TomlTableArray tableArray)
+        {
+            var arr = new JArray();
+
+            foreach (var table in tableArray)
+                arr.Add(ConvertTableToJObject(table));
+
+            return arr;
+        }
+
         private JArray ConvertArrayToJArray(TomlArray array)
         {
             var arr = new JArray();
 
             foreach (var item in array)
-                arr.Add(ConvertToJToken(item));
+            {
+                if (item is DateTimeOffset dto)
+                {
+                    arr.Add(new JValue(dto.DateTime.ToString("yyyy-MM-ddTHH:mm:ss")));
+                }
+                else if (item is DateTime dt)
+                {
+                    arr.Add(new JValue(dt.ToString("yyyy-MM-ddTHH:mm:ss")));
+                }
+                else
+                {
+                    arr.Add(ConvertToJToken(item));
+                }
+            }
 
             return arr;
         }
