@@ -164,6 +164,20 @@ namespace FormatConverter.Xml
             var typeAttr = element.Attribute("type")?.Value;
             var itemTypeAttr = element.Attribute("itemType")?.Value;
 
+            if (typeAttr == "array" && itemTypeAttr == "empty")
+            {
+                return new JArray();
+            }
+
+            if (typeAttr == "array" && !element.Elements().Any())
+            {
+                var text = element.Value?.Trim();
+                if (string.IsNullOrEmpty(text))
+                {
+                    return new JArray();
+                }
+            }
+
             if (typeAttr == "array")
             {
                 return ConvertArrayElement(element, itemTypeAttr);
@@ -181,7 +195,8 @@ namespace FormatConverter.Xml
                 a.Name.LocalName != "type" &&
                 a.Name.LocalName != "itemType"))
             {
-                obj[$"@{attr.Name.LocalName}"] = attr.Value;
+                var attrName = DecodeXmlName(attr.Name.LocalName);
+                obj[$"@{attrName}"] = attr.Value;
             }
 
             var childElements = element.Elements().ToList();
@@ -192,6 +207,8 @@ namespace FormatConverter.Xml
 
                 foreach (var group in grouped)
                 {
+                    var propertyName = DecodeXmlName(group.Key);
+
                     if (group.Key == "item" && group.All(e => e.Name.LocalName == "item"))
                     {
                         var array = new JArray();
@@ -208,17 +225,17 @@ namespace FormatConverter.Xml
 
                         if (childTypeAttr != null && child.Elements().Count() == 0)
                         {
-                            obj[group.Key] = ConvertTypedValue(child.Value?.Trim() ?? string.Empty, childTypeAttr);
+                            obj[propertyName] = ConvertTypedValue(child.Value?.Trim() ?? string.Empty, childTypeAttr);
                         }
                         else
                         {
-                            obj[group.Key] = ConvertXElementToJToken(child);
+                            obj[propertyName] = ConvertXElementToJToken(child);
                         }
                     }
                     else
                     {
                         var array = new JArray(group.Select(ConvertXElementToJToken));
-                        obj[group.Key] = array;
+                        obj[propertyName] = array;
                     }
                 }
             }
@@ -226,11 +243,6 @@ namespace FormatConverter.Xml
             if (childElements.Count == 0)
             {
                 var text = element.Value?.Trim();
-
-                if (typeAttr == "array" && (itemTypeAttr == "empty" || string.IsNullOrEmpty(text)))
-                {
-                    return new JArray();
-                }
 
                 if (!string.IsNullOrEmpty(text))
                 {
@@ -255,6 +267,18 @@ namespace FormatConverter.Xml
             }
 
             return obj;
+        }
+
+        private static string DecodeXmlName(string encodedName)
+        {
+            try
+            {
+                return XmlConvert.DecodeName(encodedName);
+            }
+            catch
+            {
+                return encodedName;
+            }
         }
 
         private JArray ConvertArrayElement(XElement element, string? itemType)
