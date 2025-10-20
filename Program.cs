@@ -6,7 +6,7 @@ namespace FormatConverter
 {
     class Program
     {
-        public const string VERSION = "2.0";
+        public const string VERSION = "2.0.1";
         public static readonly string[] BinaryFormats = ["messagepack", "cbor", "protobuf", "bxml"];
         internal static readonly string[] sourceArray = ["gzip", "deflate", "brotli"];
 
@@ -204,16 +204,72 @@ namespace FormatConverter
 
         #region Helpers
         internal static bool HasFormatSpecificOptions(Options opts) =>
+            //general formatting
             opts.IndentSize.HasValue ||
             opts.Minify ||
             !opts.PrettyPrint ||
             opts.NoMetadata ||
             opts.SortKeys ||
+
+            //JSON
             opts.JsonEscapeUnicode ||
             opts.JsonAllowTrailingCommas ||
+            !opts.JsonStrictPropertyNames ||
+            opts.JsonAllowSingleQuotes ||
+
+            //XML
             !string.IsNullOrEmpty(opts.XmlRootElement) ||
+            !string.IsNullOrEmpty(opts.XmlNamespace) ||
+            !string.IsNullOrEmpty(opts.XmlNamespacePrefix) ||
+            !opts.XmlIncludeDeclaration || //default true
+            opts.XmlStandalone ||
+            opts.XmlUseCData ||
+            opts.XmlUseAttributes ||
+
+            //YAML
+            !opts.YamlPreserveLeadingZeros ||
             opts.YamlFlowStyle ||
-            !string.IsNullOrEmpty(opts.Compression);
+            opts.YamlExplicitStart ||
+            opts.YamlExplicitEnd ||
+            opts.YamlQuoteStrings ||
+            opts.YamlCanonical ||
+            opts.YamlAllowDuplicateKeys ||
+
+            //TOML
+            !opts.TomlArrayOfTables ||
+            opts.TomlMultilineStrings ||
+            opts.TomlStrictTypes ||
+            !string.IsNullOrEmpty(opts.TomlArrayWrapperKey) ||
+
+            //MessagePack
+            !opts.MessagePackUseContractless ||
+            opts.MessagePackLz4Compression ||
+            opts.MessagePackOldSpec ||
+
+            //CBOR
+            !opts.CborAllowIndefiniteLength ||
+            opts.CborAllowMultipleContent ||
+            opts.CborCanonical ||
+            opts.CborPreserveTags ||
+            opts.CborUseDateTimeTags ||
+            opts.CborUseBigNumTags ||
+
+            //BXML
+            !string.Equals(opts.Endianness, "littleendian", StringComparison.OrdinalIgnoreCase) ||
+            !opts.CompressArrays ||
+
+            //compression
+            !string.IsNullOrEmpty(opts.Compression) ||
+
+            //transformation/data shaping
+            opts.ArrayWrap ||
+            opts.FlattenArrays ||
+            opts.MaxDepth.HasValue ||
+
+            //numeric/date/timezone formatting
+            !string.IsNullOrEmpty(opts.NumberFormat) ||
+            !string.IsNullOrEmpty(opts.DateFormat) ||
+            !string.IsNullOrEmpty(opts.Timezone);
 
         internal static string CompressString(string input, FormatConfig config, Options opt)
         {
