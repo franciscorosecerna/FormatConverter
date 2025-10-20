@@ -282,7 +282,7 @@ namespace FormatConverter.Yaml
             };
         }
 
-        private static JValue ParseStringValue(string str)
+        private JValue ParseStringValue(string str)
         {
             if (string.IsNullOrEmpty(str))
                 return new JValue(str);
@@ -296,12 +296,23 @@ namespace FormatConverter.Yaml
                 str.Equals("~", StringComparison.Ordinal))
                 return JValue.CreateNull();
 
+            if (Config.YamlPreserveLeadingZeros && str.Length > 1 && str[0] == '0' && char.IsDigit(str[1]))
+            {
+                return new JValue(str);
+            }
+
             if (long.TryParse(str, System.Globalization.NumberStyles.Integer,
                 System.Globalization.CultureInfo.InvariantCulture, out long longValue))
             {
                 if (longValue >= int.MinValue && longValue <= int.MaxValue)
                     return new JValue((int)longValue);
                 return new JValue(longValue);
+            }
+
+            if (decimal.TryParse(str, System.Globalization.NumberStyles.Number | System.Globalization.NumberStyles.AllowDecimalPoint,
+                System.Globalization.CultureInfo.InvariantCulture, out decimal decimalValue))
+            {
+                return new JValue(decimalValue);
             }
 
             if (double.TryParse(str, System.Globalization.NumberStyles.Float,

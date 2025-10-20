@@ -30,6 +30,7 @@ namespace FormatConverter
         public bool XmlUseAttributes { get; set; }
 
         //yaml specific
+        public bool YamlPreserveLeadingZeros { get; set; } = true;
         public bool YamlFlowStyle { get; set; }
         public bool YamlAllowDuplicateKeys { get; set; }
         public bool YamlExplicitStart { get; set; }
@@ -100,6 +101,7 @@ namespace FormatConverter
                 XmlUseAttributes = options.XmlUseAttributes,
 
                 //YAML
+                YamlPreserveLeadingZeros = options.YamlPreserveLeadingZeros,
                 YamlFlowStyle = options.YamlFlowStyle,
                 YamlExplicitStart = options.YamlExplicitStart,
                 YamlExplicitEnd = options.YamlExplicitEnd,

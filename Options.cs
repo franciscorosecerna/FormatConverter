@@ -89,6 +89,9 @@ namespace FormatConverter
 
         #region YAML Options
 
+        [Option("yaml-preserve-leading-zeros", Default = true, HelpText = "Preserve leading zeros in numeric strings (e.g., '01234' stays as string)")]
+        public bool YamlPreserveLeadingZeros { get; set; } = true;
+
         [Option("yaml-flow-style", HelpText = "Use flow style (inline) for YAML output")]
         public bool YamlFlowStyle { get; set; }
 
@@ -201,6 +204,8 @@ namespace FormatConverter
         #endregion
 
         #region Format Options
+
+
 
         [Option("number-format", MetaValue = "FORMAT", HelpText = "Number format for output (decimal, hexadecimal, scientific, binary, raw)")]
         public string? NumberFormat { get; set; }
