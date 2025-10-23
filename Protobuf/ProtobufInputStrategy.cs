@@ -25,6 +25,11 @@ namespace FormatConverter.Protobuf
                 if (Config.NoMetadata)
                     token = RemoveMetadataProperties(token);
 
+                if (Config.MaxDepth.HasValue)
+                {
+                    ValidateDepth(token, Config.MaxDepth.Value);
+                }
+
                 return token;
             }
             catch (Exception ex) when (ex is not FormatException && ex is not ArgumentException)
@@ -98,6 +103,11 @@ namespace FormatConverter.Protobuf
 
                             if (Config.NoMetadata)
                                 token = RemoveMetadataProperties(token);
+
+                            if (Config.MaxDepth.HasValue)
+                            {
+                                ValidateDepth(token, Config.MaxDepth.Value);
+                            }
 
                             yield return token;
 
@@ -196,6 +206,49 @@ namespace FormatConverter.Protobuf
                 return (false, null, 0,
                     new FormatException($"Unexpected Protobuf error in {path}: {ex.Message}", ex));
             }
+        }
+
+        private void ValidateDepth(JToken token, int maxDepth)
+        {
+            var actualDepth = CalculateDepth(token);
+
+            if (actualDepth > maxDepth)
+            {
+                var message = $"Protobuf structure depth ({actualDepth}) exceeds maximum allowed depth ({maxDepth})";
+
+                if (Config.IgnoreErrors)
+                {
+                    Logger.WriteWarning(message);
+                }
+                else
+                {
+                    throw new FormatException(message);
+                }
+            }
+        }
+
+        private static int CalculateDepth(JToken token, int currentDepth = 1)
+        {
+            if (token is JObject obj)
+            {
+                if (!obj.HasValues) return currentDepth;
+
+                return obj.Properties()
+                    .Select(p => CalculateDepth(p.Value, currentDepth + 1))
+                    .DefaultIfEmpty(currentDepth)
+                    .Max();
+            }
+            else if (token is JArray arr)
+            {
+                if (!arr.HasValues) return currentDepth;
+
+                return arr.Children()
+                    .Select(child => CalculateDepth(child, currentDepth + 1))
+                    .DefaultIfEmpty(currentDepth)
+                    .Max();
+            }
+
+            return currentDepth;
         }
 
         private static byte[]? TryExtractLengthDelimitedMessage(ReadOnlySpan<byte> data, out int consumed)
@@ -515,13 +568,28 @@ namespace FormatConverter.Protobuf
             return result;
         }
 
-        private JObject ConvertStructToJToken(Struct protobufStruct)
+        private JObject ConvertStructToJToken(Struct protobufStruct, int currentDepth = 1)
         {
+            if (Config.MaxDepth.HasValue && currentDepth > Config.MaxDepth.Value)
+            {
+                var message = $"Protobuf Struct depth ({currentDepth}) exceeds maximum allowed depth ({Config.MaxDepth.Value})";
+
+                if (Config.IgnoreErrors)
+                {
+                    Logger.WriteWarning(message);
+                    var errorObj = new JObject();
+                    errorObj["_depth_error"] = $"Depth limit exceeded at level {currentDepth}";
+                    return errorObj;
+                }
+
+                throw new FormatException(message);
+            }
+
             var result = new JObject();
 
             foreach (var field in protobufStruct.Fields)
             {
-                result[field.Key] = ConvertValueToJToken(field.Value);
+                result[field.Key] = ConvertValueToJToken(field.Value, currentDepth + 1);
             }
 
             return result;
@@ -538,27 +606,57 @@ namespace FormatConverter.Protobuf
             return result;
         }
 
-        private JToken ConvertValueToJToken(Value value)
+        private JToken ConvertValueToJToken(Value value, int currentDepth = 1)
         {
+            if (Config.MaxDepth.HasValue && currentDepth > Config.MaxDepth.Value)
+            {
+                var message = $"Protobuf Value depth ({currentDepth}) exceeds maximum allowed depth ({Config.MaxDepth.Value})";
+
+                if (Config.IgnoreErrors)
+                {
+                    Logger.WriteWarning(message);
+                    return new JValue($"[Depth limit exceeded at level {currentDepth}]");
+                }
+
+                throw new FormatException(message);
+            }
+
             return value.KindCase switch
             {
                 Value.KindOneofCase.StringValue => new JValue(value.StringValue),
                 Value.KindOneofCase.NumberValue => new JValue(value.NumberValue),
                 Value.KindOneofCase.BoolValue => new JValue(value.BoolValue),
                 Value.KindOneofCase.NullValue => JValue.CreateNull(),
-                Value.KindOneofCase.ListValue => ConvertListValueToJArray(value.ListValue),
-                Value.KindOneofCase.StructValue => ConvertStructToJToken(value.StructValue),
+                Value.KindOneofCase.ListValue => ConvertListValueToJArray(value.ListValue, currentDepth + 1),
+                Value.KindOneofCase.StructValue => ConvertStructToJToken(value.StructValue, currentDepth + 1),
                 _ => JValue.CreateNull()
             };
         }
 
-        private JArray ConvertListValueToJArray(ListValue listValue)
+        private JArray ConvertListValueToJArray(ListValue listValue, int currentDepth = 1)
         {
+            if (Config.MaxDepth.HasValue && currentDepth > Config.MaxDepth.Value)
+            {
+                var message = $"Protobuf ListValue depth ({currentDepth}) exceeds maximum allowed depth ({Config.MaxDepth.Value})";
+
+                if (Config.IgnoreErrors)
+                {
+                    Logger.WriteWarning(message);
+                    var errorArray = new JArray
+                    {
+                        new JValue($"[Depth limit exceeded at level {currentDepth}]")
+                    };
+                    return errorArray;
+                }
+
+                throw new FormatException(message);
+            }
+
             var result = new JArray();
 
             foreach (var item in listValue.Values)
             {
-                result.Add(ConvertValueToJToken(item));
+                result.Add(ConvertValueToJToken(item, currentDepth + 1));
             }
 
             return result;
@@ -612,8 +710,6 @@ namespace FormatConverter.Protobuf
         }
 
         private static bool IsValidUtf8String(string str)
-        {
-            return str.All(c => !char.IsControl(c) || char.IsWhiteSpace(c));
-        }
+            => str.All(c => !char.IsControl(c) || char.IsWhiteSpace(c));
     }
 }

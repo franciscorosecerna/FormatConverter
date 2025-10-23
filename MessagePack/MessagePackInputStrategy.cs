@@ -28,7 +28,14 @@ namespace FormatConverter.MessagePack
                 var obj = MessagePackSerializer.Deserialize<object>(bytes, options)
                     ?? throw new FormatException("MessagePack deserialization returned null");
 
-                return ConvertObjectToJToken(obj);
+                var token = ConvertObjectToJToken(obj);
+
+                if (Config.MaxDepth.HasValue)
+                {
+                    ValidateDepth(token, Config.MaxDepth.Value);
+                }
+
+                return token;
             }
             catch (Exception ex) when (ex is not FormatException && ex is not ArgumentException)
             {
@@ -164,6 +171,12 @@ namespace FormatConverter.MessagePack
                 if (obj != null)
                 {
                     var token = ConvertObjectToJToken(obj);
+
+                    if (Config.MaxDepth.HasValue)
+                    {
+                        ValidateDepth(token, Config.MaxDepth.Value);
+                    }
+
                     return (true, token, reader.Consumed - consumedBefore, null);
                 }
 
@@ -184,6 +197,49 @@ namespace FormatConverter.MessagePack
                 return (false, null, reader.Consumed - consumedBefore,
                     new FormatException($"Unexpected MessagePack error in {path}: {ex.Message}", ex));
             }
+        }
+
+        private void ValidateDepth(JToken token, int maxDepth)
+        {
+            var actualDepth = CalculateDepth(token);
+
+            if (actualDepth > maxDepth)
+            {
+                var message = $"MessagePack structure depth ({actualDepth}) exceeds maximum allowed depth ({maxDepth})";
+
+                if (Config.IgnoreErrors)
+                {
+                    Logger.WriteWarning(message);
+                }
+                else
+                {
+                    throw new FormatException(message);
+                }
+            }
+        }
+
+        private static int CalculateDepth(JToken token, int currentDepth = 1)
+        {
+            if (token is JObject obj)
+            {
+                if (!obj.HasValues) return currentDepth;
+
+                return obj.Properties()
+                    .Select(p => CalculateDepth(p.Value, currentDepth + 1))
+                    .DefaultIfEmpty(currentDepth)
+                    .Max();
+            }
+            else if (token is JArray arr)
+            {
+                if (!arr.HasValues) return currentDepth;
+
+                return arr.Children()
+                    .Select(child => CalculateDepth(child, currentDepth + 1))
+                    .DefaultIfEmpty(currentDepth)
+                    .Max();
+            }
+
+            return currentDepth;
         }
 
         private JObject HandleParsingError(Exception ex, string input)
@@ -282,17 +338,30 @@ namespace FormatConverter.MessagePack
             return options;
         }
 
-        private JToken ConvertObjectToJToken(object? obj)
+        private JToken ConvertObjectToJToken(object? obj, int currentDepth = 100)
         {
+            if (Config.MaxDepth.HasValue && currentDepth > Config.MaxDepth.Value)
+            {
+                var message = $"MessagePack structure depth ({currentDepth}) exceeds maximum allowed depth ({Config.MaxDepth.Value}) during conversion";
+
+                if (Config.IgnoreErrors)
+                {
+                    Logger.WriteWarning(message);
+                    return new JValue($"[Depth limit exceeded at level {currentDepth}]");
+                }
+
+                throw new FormatException(message);
+            }
+
             if (obj == null) return JValue.CreateNull();
 
             return obj switch
             {
-                Dictionary<object, object> dict => ConvertDictionaryToJObject(dict),
-                Dictionary<string, object> stringDict => ConvertStringDictionaryToJObject(stringDict),
-                List<object> list => ConvertListToJArray(list),
+                Dictionary<object, object> dict => ConvertDictionaryToJObject(dict, currentDepth),
+                Dictionary<string, object> stringDict => ConvertStringDictionaryToJObject(stringDict, currentDepth),
+                List<object> list => ConvertListToJArray(list, currentDepth),
                 byte[] bytes => new JValue(Convert.ToBase64String(bytes)),
-                Array array => ConvertArrayToJArray(array),
+                Array array => ConvertArrayToJArray(array, currentDepth),
                 string str => new JValue(str),
                 bool b => new JValue(b),
                 byte b => new JValue(b),
@@ -312,47 +381,47 @@ namespace FormatConverter.MessagePack
                 DateTimeOffset dto => new JValue(dto.DateTime),
                 Guid guid => new JValue(guid.ToString()),
                 Enum e => new JValue(e.ToString()),
-                _ when obj.GetType().IsArray => ConvertArrayToJArray((Array)obj),
-                _ => ConvertComplexObjectToJToken(obj)
+                _ when obj.GetType().IsArray => ConvertArrayToJArray((Array)obj, currentDepth),
+                _ => ConvertComplexObjectToJToken(obj, currentDepth)
             };
         }
 
-        private JObject ConvertDictionaryToJObject(Dictionary<object, object> dict)
+        private JObject ConvertDictionaryToJObject(Dictionary<object, object> dict, int currentDepth)
         {
             var result = new JObject();
             foreach (var kvp in dict)
             {
                 var key = ConvertKeyToString(kvp.Key);
-                result[key] = ConvertObjectToJToken(kvp.Value);
+                result[key] = ConvertObjectToJToken(kvp.Value, currentDepth + 1);
             }
             return result;
         }
 
-        private JObject ConvertStringDictionaryToJObject(Dictionary<string, object> dict)
+        private JObject ConvertStringDictionaryToJObject(Dictionary<string, object> dict, int currentDepth)
         {
             var result = new JObject();
             foreach (var kvp in dict)
-                result[kvp.Key] = ConvertObjectToJToken(kvp.Value);
+                result[kvp.Key] = ConvertObjectToJToken(kvp.Value, currentDepth + 1);
             return result;
         }
 
-        private JArray ConvertListToJArray(List<object> list)
+        private JArray ConvertListToJArray(List<object> list, int currentDepth)
         {
             var result = new JArray();
             foreach (var item in list)
-                result.Add(ConvertObjectToJToken(item));
+                result.Add(ConvertObjectToJToken(item, currentDepth + 1));
             return result;
         }
 
-        private JArray ConvertArrayToJArray(Array array)
+        private JArray ConvertArrayToJArray(Array array, int currentDepth)
         {
             var result = new JArray();
             foreach (var item in array)
-                result.Add(ConvertObjectToJToken(item));
+                result.Add(ConvertObjectToJToken(item, currentDepth + 1));
             return result;
         }
 
-        private JToken ConvertComplexObjectToJToken(object obj)
+        private JToken ConvertComplexObjectToJToken(object obj, int currentDepth)
         {
             var type = obj.GetType();
 
@@ -374,7 +443,7 @@ namespace FormatConverter.MessagePack
                         try
                         {
                             var value = prop.GetValue(obj);
-                            result[prop.Name] = ConvertObjectToJToken(value);
+                            result[prop.Name] = ConvertObjectToJToken(value, currentDepth + 1);
                         }
                         catch (Exception ex) when (Config.IgnoreErrors)
                         {
