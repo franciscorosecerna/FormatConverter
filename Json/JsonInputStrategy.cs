@@ -32,11 +32,6 @@ namespace FormatConverter.Json
 
                 var token = JToken.ReadFrom(jsonReader, settings);
 
-                if (Config.MaxDepth.HasValue)
-                {
-                    ValidateDepth(token, Config.MaxDepth.Value);
-                }
-
                 return token;
             }
             catch (JsonReaderException ex)
@@ -103,11 +98,6 @@ namespace FormatConverter.Json
             {
                 var token = JToken.ReadFrom(jsonReader, settings);
 
-                if (Config.MaxDepth.HasValue)
-                {
-                    ValidateDepth(token, Config.MaxDepth.Value);
-                }
-
                 return token;
             }
             catch (JsonReaderException ex)
@@ -123,49 +113,6 @@ namespace FormatConverter.Json
                     $"Invalid JSON at line {jsonReader.LineNumber}, position {jsonReader.LinePosition}: {ex.Message}",
                     ex);
             }
-        }
-
-        private void ValidateDepth(JToken token, int maxDepth)
-        {
-            var actualDepth = CalculateDepth(token);
-
-            if (actualDepth > maxDepth)
-            {
-                var message = $"JSON depth ({actualDepth}) exceeds maximum allowed depth ({maxDepth})";
-
-                if (Config.IgnoreErrors)
-                {
-                    Logger.WriteWarning(message);
-                }
-                else
-                {
-                    throw new JsonReaderException(message);
-                }
-            }
-        }
-
-        private static int CalculateDepth(JToken token, int currentDepth = 1)
-        {
-            if (token is JObject obj)
-            {
-                if (!obj.HasValues) return currentDepth;
-
-                return obj.Properties()
-                    .Select(p => CalculateDepth(p.Value, currentDepth + 1))
-                    .DefaultIfEmpty(currentDepth)
-                    .Max();
-            }
-            else if (token is JArray arr)
-            {
-                if (!arr.HasValues) return currentDepth;
-
-                return arr.Children()
-                    .Select(child => CalculateDepth(child, currentDepth + 1))
-                    .DefaultIfEmpty(currentDepth)
-                    .Max();
-            }
-
-            return currentDepth;
         }
 
         private JsonTextReader CreateJsonTextReader(StreamReader streamReader)
@@ -257,10 +204,10 @@ namespace FormatConverter.Json
         }
 
         private static string RemoveTrailingCommas(string json)
-            => Regex.Replace(json, @",(\s*[\]}])", "$1");
+            => Regex.Replace(json, @",(\s*[\]}])", "$1", RegexOptions.Compiled);
 
         private static string AddQuotesToPropertyNames(string json)
-            => Regex.Replace(json, @"(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:", "$1\"$2\":");
+            => Regex.Replace(json, @"(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:", "$1\"$2\":", RegexOptions.Compiled);
 
         private JObject HandleParsingError(JsonReaderException ex, string input)
         {

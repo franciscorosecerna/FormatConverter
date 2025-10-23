@@ -313,7 +313,6 @@ namespace FormatConverter.MessagePack
         private MessagePackSerializerOptions GetMessagePackOptions()
         {
             MessagePackSerializerOptions options;
-
             if (Config.MessagePackUseContractless)
             {
                 options = MessagePackSerializerOptions.Standard
