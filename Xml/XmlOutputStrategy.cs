@@ -280,17 +280,7 @@ namespace FormatConverter.Xml
                 {
                     var element = new XElement(_currentNamespace + SanitizeElementName(property.Name));
 
-                    if (property.Value.Type == JTokenType.Array)
-                    {
-                        element.SetAttributeValue("type", "array");
-
-                        var arrayType = DetectArrayType((JArray)property.Value);
-                        if (!string.IsNullOrEmpty(arrayType))
-                        {
-                            element.SetAttributeValue("itemType", arrayType);
-                        }
-                    }
-                    else if (IsSimpleValue(property.Value))
+                    if (property.Value.Type != JTokenType.Array && IsSimpleValue(property.Value))
                     {
                         var valueType = GetValueType(property.Value);
                         if (!string.IsNullOrEmpty(valueType))
@@ -307,6 +297,20 @@ namespace FormatConverter.Xml
 
         private void ConvertJArrayToXElement(JArray jArray, XElement parent)
         {
+            parent.SetAttributeValue("type", "array");
+
+            if (jArray.Count == 0)
+            {
+                parent.SetAttributeValue("itemType", "empty");
+                return;
+            }
+
+            var arrayType = DetectArrayType(jArray);
+            if (!string.IsNullOrEmpty(arrayType))
+            {
+                parent.SetAttributeValue("itemType", arrayType);
+            }
+
             foreach (var item in jArray)
             {
                 var itemElement = new XElement(_currentNamespace + "item");

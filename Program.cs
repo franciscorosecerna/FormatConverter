@@ -1,14 +1,16 @@
 ﻿using CommandLine;
 using FormatConverter.Logger;
+using K4os.Compression.LZ4;
+using K4os.Compression.LZ4.Streams;
 using System.IO.Compression;
 
 namespace FormatConverter
 {
     class Program
     {
-        public const string VERSION = "2.0.1";
+        public const string VERSION = "2.0.2";
         public static readonly string[] BinaryFormats = ["messagepack", "cbor", "protobuf", "bxml"];
-        internal static readonly string[] sourceArray = ["gzip", "deflate", "brotli"];
+        internal static readonly string[] sourceArray = ["gzip", "deflate", "brotli", "lz4"];
 
         private static readonly ConsoleLogger _logger = new();
 
@@ -274,26 +276,24 @@ namespace FormatConverter
         internal static string CompressString(string input, FormatConfig config, Options opt)
         {
             var bytes = config.Encoding.GetBytes(input);
-
             if ((opt.InputFormat == "messagepack" || opt.OutputFormat == "messagepack") &&
                 (string.Equals(config.Compression, "lz4", StringComparison.OrdinalIgnoreCase) ||
                  string.IsNullOrEmpty(config.Compression)))
             {
                 return input;
             }
-
             using var output = new MemoryStream();
             using (Stream compressionStream = config.Compression?.ToLower() switch
             {
                 "gzip" => new GZipStream(output, CompressionLevel.Optimal),
                 "deflate" => new DeflateStream(output, CompressionLevel.Optimal),
                 "brotli" => new BrotliStream(output, CompressionLevel.Optimal),
+                "lz4" => LZ4Stream.Encode(output, LZ4Level.L09_HC),
                 _ => throw new NotSupportedException($"Unsupported compression: {config.Compression}")
             })
             {
                 compressionStream.Write(bytes, 0, bytes.Length);
             }
-
             return Convert.ToBase64String(output.ToArray());
         }
 

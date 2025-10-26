@@ -23,7 +23,16 @@ namespace FormatConverter.Json
 
             try
             {
-                return JToken.Parse(json, settings);
+                using var stringReader = new StringReader(json);
+                using var jsonReader = new JsonTextReader(stringReader)
+                {
+                    MaxDepth = Config.MaxDepth,
+                    DateParseHandling = DateParseHandling.None
+                };
+
+                var token = JToken.ReadFrom(jsonReader, settings);
+
+                return token;
             }
             catch (JsonReaderException ex)
             {
@@ -87,7 +96,9 @@ namespace FormatConverter.Json
         {
             try
             {
-                return JToken.ReadFrom(jsonReader, settings);
+                var token = JToken.ReadFrom(jsonReader, settings);
+
+                return token;
             }
             catch (JsonReaderException ex)
             {
@@ -193,10 +204,10 @@ namespace FormatConverter.Json
         }
 
         private static string RemoveTrailingCommas(string json)
-            => Regex.Replace(json, @",(\s*[\]}])", "$1");
+            => Regex.Replace(json, @",(\s*[\]}])", "$1", RegexOptions.Compiled);
 
         private static string AddQuotesToPropertyNames(string json)
-            => Regex.Replace(json, @"(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:", "$1\"$2\":");
+            => Regex.Replace(json, @"(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:", "$1\"$2\":", RegexOptions.Compiled);
 
         private JObject HandleParsingError(JsonReaderException ex, string input)
         {
