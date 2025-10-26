@@ -23,7 +23,7 @@ namespace FormatConverter.Logger
                 Directory.CreateDirectory(directory);
 
             _encoding = encoding;
-            _writer = new StreamWriter(logFilePath, append: true, encoding: _encoding)
+            _writer = new StreamWriter(logFilePath, append: false, encoding: _encoding)
             {
                 AutoFlush = true
             };
