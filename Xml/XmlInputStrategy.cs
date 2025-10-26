@@ -164,22 +164,22 @@ namespace FormatConverter.Xml
             var typeAttr = element.Attribute("type")?.Value;
             var itemTypeAttr = element.Attribute("itemType")?.Value;
 
-            if (typeAttr == "array" && itemTypeAttr == "empty")
+            if (typeAttr == "array")
             {
-                return new JArray();
-            }
-
-            if (typeAttr == "array" && !element.Elements().Any())
-            {
-                var text = element.Value?.Trim();
-                if (string.IsNullOrEmpty(text))
+                if (itemTypeAttr == "empty")
                 {
                     return new JArray();
                 }
-            }
 
-            if (typeAttr == "array")
-            {
+                if (!element.Elements().Any())
+                {
+                    var text = element.Value?.Trim();
+                    if (string.IsNullOrEmpty(text))
+                    {
+                        return new JArray();
+                    }
+                }
+
                 return ConvertArrayElement(element, itemTypeAttr);
             }
 
@@ -221,16 +221,7 @@ namespace FormatConverter.Xml
                     else if (group.Count() == 1)
                     {
                         var child = group.First();
-                        var childTypeAttr = child.Attribute("type")?.Value;
-
-                        if (childTypeAttr != null && child.Elements().Count() == 0)
-                        {
-                            obj[propertyName] = ConvertTypedValue(child.Value?.Trim() ?? string.Empty, childTypeAttr);
-                        }
-                        else
-                        {
-                            obj[propertyName] = ConvertXElementToJToken(child);
-                        }
+                        obj[propertyName] = ConvertXElementToJToken(child);
                     }
                     else
                     {
