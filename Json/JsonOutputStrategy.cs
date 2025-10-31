@@ -1,7 +1,6 @@
 ﻿using FormatConverter.Interfaces;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using Newtonsoft.Json.Converters;
 
 namespace FormatConverter.Json
 {
@@ -151,29 +150,6 @@ namespace FormatConverter.Json
                                        StringEscapeHandling.EscapeNonAscii :
                                        StringEscapeHandling.Default
             };
-
-            if (!string.IsNullOrEmpty(Config.DateFormat))
-            {
-                if (Config.DateFormat.Equals("iso8601", StringComparison.OrdinalIgnoreCase))
-                {
-                    settings.DateFormatHandling = DateFormatHandling.IsoDateFormat;
-                    settings.DateFormatString = "yyyy-MM-ddTHH:mm:ss.fffZ";
-                }
-                else if (Config.DateFormat.Equals("unix", StringComparison.OrdinalIgnoreCase))
-                {
-                    settings.Converters.Add(new UnixDateTimeConverter());
-                    settings.DateFormatHandling = DateFormatHandling.IsoDateFormat;
-                }
-                else if (Config.DateFormat.Equals("rfc3339", StringComparison.OrdinalIgnoreCase))
-                {
-                    settings.DateFormatHandling = DateFormatHandling.IsoDateFormat;
-                    settings.DateFormatString = "yyyy-MM-dd'T'HH:mm:ss.fffzzz";
-                }
-                else
-                {
-                    settings.DateFormatString = Config.DateFormat;
-                }
-            }
 
             if (Config.IgnoreErrors)
             {

@@ -358,16 +358,16 @@ namespace FormatConverter.MessagePack
                     return ProcessStringValue(stringValue);
 
                 case JTokenType.Integer:
-                    return ProcessIntegerValue(token.Value<long>());
+                    return token.Value<long>();
 
                 case JTokenType.Float:
-                    return FormatNumberValue(token.Value<double>());
+                    return token.Value<double>();
 
                 case JTokenType.Boolean:
                     return token.Value<bool>();
 
                 case JTokenType.Date:
-                    return FormatDateTimeValue(token.Value<DateTime>());
+                    return token.Value<DateTime>();
 
                 case JTokenType.Null:
                     return null;
@@ -419,60 +419,12 @@ namespace FormatConverter.MessagePack
             return value;
         }
 
-        private long ProcessIntegerValue(long value)
-        {
-            if (!string.IsNullOrEmpty(Config.NumberFormat))
-            {
-                return Config.NumberFormat.ToLower() switch
-                {
-                    "hexadecimal" => value,
-                    _ => value
-                };
-            }
-
-            if (value >= int.MinValue && value <= int.MaxValue)
-                return (int)value;
-
-            return value;
-        }
-
         private static bool ShouldTreatAsBinary(string value)
         {
             if (string.IsNullOrEmpty(value) || value.Length < 8 || value.Length % 4 != 0)
                 return false;
 
             return value.All(c => char.IsLetterOrDigit(c) || c == '+' || c == '/' || c == '=');
-        }
-
-        private double FormatNumberValue(double number)
-        {
-            if (!string.IsNullOrEmpty(Config.NumberFormat))
-            {
-                return Config.NumberFormat.ToLower() switch
-                {
-                    "scientific" => double.Parse(number.ToString("E")),
-                    "hexadecimal" => (long)number,
-                    _ => number
-                };
-            }
-            return number;
-        }
-
-        private object FormatDateTimeValue(DateTime dateTime)
-        {
-            if (!string.IsNullOrEmpty(Config.DateFormat))
-            {
-                return Config.DateFormat.ToLower() switch
-                {
-                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                    "unix" => ((DateTimeOffset)dateTime).ToUnixTimeSeconds(),
-                    "rfc3339" => dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz"),
-                    "timestamp" => ((DateTimeOffset)dateTime).ToUnixTimeMilliseconds(),
-                    _ => dateTime.ToString(Config.DateFormat)
-                };
-            }
-
-            return dateTime;
         }
 
         private string FormatOutput(byte[] bytes)

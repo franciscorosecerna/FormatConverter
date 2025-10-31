@@ -203,31 +203,17 @@ namespace FormatConverter.Yaml
             return sb.ToString();
         }
 
-        private object? ConvertJTokenToObject(JToken token, int currentDepth = 0)
+        private object? ConvertJTokenToObject(JToken token)
         {
-            if (Config.MaxDepth.HasValue && currentDepth > Config.MaxDepth.Value)
-            {
-                if (Config.IgnoreErrors)
-                {
-                    Logger.WriteWarning($"Maximum depth {Config.MaxDepth.Value} exceeded during serialization");
-                    return $"[Max depth exceeded at level {currentDepth}]";
-                }
-                throw new FormatException($"Maximum depth of {Config.MaxDepth.Value} exceeded during serialization");
-            }
-
             switch (token.Type)
             {
                 case JTokenType.Object:
                     var dict = new Dictionary<string, object?>();
                     var jObject = (JObject)token;
 
-                    var properties = Config.SortKeys
-                        ? jObject.Properties().OrderBy(p => p.Name)
-                        : jObject.Properties();
-
-                    foreach (var property in properties)
+                    foreach (var property in jObject.Properties())
                     {
-                        dict[property.Name] = ConvertJTokenToObject(property.Value, currentDepth + 1);
+                        dict[property.Name] = ConvertJTokenToObject(property.Value);
                     }
                     return dict;
 
@@ -235,7 +221,7 @@ namespace FormatConverter.Yaml
                     var list = new List<object?>();
                     foreach (var item in token.Children())
                     {
-                        list.Add(ConvertJTokenToObject(item, currentDepth + 1));
+                        list.Add(ConvertJTokenToObject(item));
                     }
                     return list;
 
@@ -243,11 +229,18 @@ namespace FormatConverter.Yaml
                     return token.Value<string>() ?? string.Empty;
 
                 case JTokenType.Integer:
+                    if (Config.YamlPreserveLeadingZeros)
+                    {
+                        var originalString = ((JValue)token).ToString();
+
+                        if (originalString.StartsWith("0") && originalString.Length > 1)
+                        {
+                            return originalString;
+                        }
+                    }
                     return token.Value<long>();
 
                 case JTokenType.Float:
-                    if (!string.IsNullOrEmpty(Config.NumberFormat))
-                        return FormatNumber(token.Value<double>());
                     return token.Value<double>();
 
                 case JTokenType.Boolean:
@@ -257,9 +250,8 @@ namespace FormatConverter.Yaml
                     return null;
 
                 case JTokenType.Date:
-                    if (!string.IsNullOrEmpty(Config.DateFormat))
-                        return FormatDateTime(token.Value<DateTime>());
                     return token.Value<DateTime>();
+
                 default:
                     return token.ToString();
             }

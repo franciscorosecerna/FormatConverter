@@ -458,26 +458,26 @@ namespace FormatConverter.Toml
             return value.Type switch
             {
                 JTokenType.Null => HandleNullValue(),
-                JTokenType.String => FormatStringValue(value),
+                JTokenType.String => FormatStringValue(value.Value<string>()!),
                 JTokenType.Boolean => value.Value<bool>().ToString().ToLower(),
-                JTokenType.Integer => FormatInteger(value.Value<long>()),
+                JTokenType.Integer => value.Value<long>().ToString(CultureInfo.InvariantCulture),
                 JTokenType.Float => FormatFloat(value.Value<double>()),
-                JTokenType.Date => FormatDateTime(value.Value<DateTime>()),
+                JTokenType.Date => value.Value<DateTime>().ToString("yyyy-MM-dd'T'HH:mm:ss.fff", CultureInfo.InvariantCulture),
                 JTokenType.Array => FormatArray((JArray)value),
                 JTokenType.Object => FormatInlineTable((JObject)value),
                 _ => $"\"{value}\""
             };
         }
 
-        private string FormatStringValue(JToken value)
+        private string FormatStringValue(string str)
         {
-            var str = value.Value<string>()!;
-
             if (DateTime.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime dateTime))
             {
                 if (str.Contains('T') && (str.Contains('-') || str.Contains(':')))
                 {
-                    return FormatDateTime(dateTime);
+                    return str.Contains('Z') || str.Contains('+') || str.Contains("offset")
+                        ? str
+                        : dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff", CultureInfo.InvariantCulture);
                 }
             }
 
@@ -505,16 +505,6 @@ namespace FormatConverter.Toml
             return $"\"{EscapeString(str)}\"";
         }
 
-        private string FormatInteger(long number)
-        {
-            if (!string.IsNullOrEmpty(Config.NumberFormat) &&
-                Config.NumberFormat.Equals("hexadecimal", StringComparison.OrdinalIgnoreCase))
-            {
-                return $"0x{number:X}";
-            }
-            return number.ToString(CultureInfo.InvariantCulture);
-        }
-
         private string FormatFloat(double number)
         {
             if (Config.TomlStrictTypes && (double.IsNaN(number) || double.IsInfinity(number)))
@@ -529,28 +519,7 @@ namespace FormatConverter.Toml
             if (double.IsNegativeInfinity(number))
                 return "\"-Infinity\"";
 
-            if (!string.IsNullOrEmpty(Config.NumberFormat) &&
-                Config.NumberFormat.Equals("scientific", StringComparison.OrdinalIgnoreCase))
-            {
-                return number.ToString("E", CultureInfo.InvariantCulture);
-            }
-
             return number.ToString("G", CultureInfo.InvariantCulture);
-        }
-
-        protected override string FormatDateTime(DateTime dateTime)
-        {
-            if (!string.IsNullOrEmpty(Config.DateFormat))
-            {
-                return Config.DateFormat.ToLower() switch
-                {
-                    "iso8601" => dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture),
-                    "rfc3339" => dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz", CultureInfo.InvariantCulture),
-                    _ => dateTime.ToString(Config.DateFormat, CultureInfo.InvariantCulture)
-                };
-            }
-
-            return dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff", CultureInfo.InvariantCulture);
         }
 
         private string FormatArray(JArray array)
@@ -589,11 +558,7 @@ namespace FormatConverter.Toml
         {
             if (!obj.Properties().Any()) return "{}";
 
-            var properties = Config.SortKeys
-                ? obj.Properties().OrderBy(p => p.Name)
-                : obj.Properties();
-
-            var pairs = properties.Select(p =>
+            var pairs = obj.Properties().Select(p =>
             {
                 var key = NeedsQuoting(p.Name) ? $"\"{p.Name}\"" : p.Name;
                 return $"{key} = {FormatTomlValue(p.Value)}";

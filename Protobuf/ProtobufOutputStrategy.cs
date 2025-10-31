@@ -330,28 +330,16 @@ namespace FormatConverter.Protobuf
         {
             return token.Type switch
             {
-                JTokenType.String => ConvertStringToValue(token.Value<string>()),
-                JTokenType.Integer => Value.ForNumber(FormatNumberValue(token.Value<long>())),
-                JTokenType.Float => Value.ForNumber(FormatNumberValue(token.Value<double>())),
+                JTokenType.String => Value.ForString(token.Value<string>() ?? string.Empty),
+                JTokenType.Integer => Value.ForNumber(token.Value<long>()),
+                JTokenType.Float => Value.ForNumber(token.Value<double>()),
                 JTokenType.Boolean => Value.ForBool(token.Value<bool>()),
                 JTokenType.Null => Value.ForNull(),
                 JTokenType.Array => ConvertJArrayToValue((JArray)token),
                 JTokenType.Object => ConvertJObjectToValue((JObject)token),
-                JTokenType.Date => ConvertDateToValue(token.Value<DateTime>()),
+                JTokenType.Date => Value.ForString(token.Value<DateTime>().ToString("O")),
                 _ => Value.ForString(token.ToString())
             };
-        }
-
-        private static Value ConvertStringToValue(string? str)
-        {
-            if (str == null) return Value.ForNull();
-            return Value.ForString(str);
-        }
-
-        private Value ConvertDateToValue(DateTime dateTime)
-        {
-            var formattedDate = FormatDateTime(dateTime);
-            return Value.ForString(formattedDate);
         }
 
         private Value ConvertJArrayToValue(JArray array)
@@ -384,41 +372,12 @@ namespace FormatConverter.Protobuf
         {
             var structValue = new Struct();
 
-            var properties = Config.SortKeys
-                ? json.Properties().OrderBy(p => p.Name)
-                : json.Properties();
-
-            foreach (var property in properties)
+            foreach (var property in json.Properties())
             {
-                if (Config.NoMetadata && IsMetadataField(property.Name))
-                    continue;
-
                 structValue.Fields[property.Name] = ConvertJTokenToValue(property.Value);
             }
 
             return structValue;
-        }
-
-        private static bool IsMetadataField(string fieldName)
-        {
-            return fieldName.StartsWith("_") ||
-                   fieldName.StartsWith("@") ||
-                   fieldName.Equals("$schema", StringComparison.OrdinalIgnoreCase) ||
-                   fieldName.Equals("metadata", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private double FormatNumberValue(double number)
-        {
-            if (!string.IsNullOrEmpty(Config.NumberFormat))
-            {
-                return Config.NumberFormat.ToLower() switch
-                {
-                    "scientific" => double.Parse(number.ToString("E")),
-                    "hexadecimal" => Convert.ToDouble(Convert.ToInt64(number)),
-                    _ => number
-                };
-            }
-            return number;
         }
 
         private string FormatOutput(byte[] bytes)

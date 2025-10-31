@@ -60,6 +60,11 @@ namespace FormatConverter.Bxml
                 var bytes = SerializeToBxml(data);
                 return FormatOutput(bytes);
             }
+            catch (Exception ex) when (Config.IgnoreErrors)
+            {
+                Logger.WriteWarning($"BXML serialization error ignored: {ex.Message}");
+                return CreateErrorOutput(ex.Message, ex.GetType().Name, data);
+            }
             catch (Exception ex) when (ex is not FormatException)
             {
                 throw new FormatException($"BXML serialization failed: {ex.Message}", ex);
@@ -190,6 +195,7 @@ namespace FormatConverter.Bxml
                     }
                     catch (Exception ex) when (Config.IgnoreErrors)
                     {
+                        Logger.WriteWarning($"BXML serialization error in item {i}: {ex.Message}");
                         var errorBytes = CreateErrorBxmlBytes(ex.Message, ex.GetType().Name, items[i]);
 
                         if (errorBytes.Length <= rentedBuffer.Length)
@@ -250,6 +256,7 @@ namespace FormatConverter.Bxml
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
+                    Logger.WriteWarning($"BXML serialization error in item {i}: {ex.Message}");
                     var errorOutput = CreateErrorOutput(ex.Message, ex.GetType().Name, items[i]);
 
                     if (!isFirst && !Config.Minify)
@@ -452,7 +459,7 @@ namespace FormatConverter.Bxml
                 return Convert.ToBase64String(errorBytes);
             }
         }
-        
+
         private void ValidateBxml(string result)
         {
             if (!Config.StrictMode) return;

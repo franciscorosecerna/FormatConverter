@@ -264,7 +264,7 @@ namespace FormatConverter.Xml
                 if (property.Name.StartsWith("@"))
                 {
                     var attrName = SanitizeElementName(property.Name.Substring(1));
-                    var attrValue = FormatValue(property.Value);
+                    var attrValue = GetValueAsString(property.Value);
                     parent.SetAttributeValue(attrName, attrValue);
                 }
                 else if (property.Name == "#text")
@@ -273,7 +273,7 @@ namespace FormatConverter.Xml
                 }
                 else if (Config.XmlUseAttributes && IsSimpleValue(property.Value))
                 {
-                    var attrValue = FormatValue(property.Value);
+                    var attrValue = GetValueAsString(property.Value);
                     parent.SetAttributeValue(SanitizeElementName(property.Name), attrValue);
                 }
                 else
@@ -333,7 +333,7 @@ namespace FormatConverter.Xml
         {
             if (value == null) return;
 
-            var textValue = FormatValue(value);
+            var textValue = GetValueAsString(value);
 
             if (Config.XmlUseCData && ContainsXmlSpecialCharacters(textValue))
             {
@@ -343,6 +343,18 @@ namespace FormatConverter.Xml
             {
                 parent.Value = textValue;
             }
+        }
+
+        private static string GetValueAsString(object value)
+        {
+            if (value is JToken token)
+            {
+                return token.Type == JTokenType.String
+                    ? token.Value<string>() ?? string.Empty
+                    : token.ToString();
+            }
+
+            return value?.ToString() ?? string.Empty;
         }
 
         private static string? DetectArrayType(JArray array)

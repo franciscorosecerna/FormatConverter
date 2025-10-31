@@ -336,7 +336,7 @@ namespace FormatConverter.Cbor
                 JTokenType.Array => ConvertJArrayToCborArray((JArray)token),
                 JTokenType.String => ConvertStringToCbor(token.Value<string>()),
                 JTokenType.Integer => ProcessIntegerValue(token.Value<long>()),
-                JTokenType.Float => CBORObject.FromObject(FormatNumberValue(token.Value<double>())),
+                JTokenType.Float => CBORObject.FromObject(token.Value<double>()),
                 JTokenType.Boolean => CBORObject.FromObject(token.Value<bool>()),
                 JTokenType.Date => ConvertDateToCbor(token.Value<DateTime>()),
                 JTokenType.Null => CBORObject.Null,
@@ -357,11 +357,7 @@ namespace FormatConverter.Cbor
         {
             var cborMap = CBORObject.NewMap();
 
-            var properties = Config.SortKeys
-                ? jObject.Properties().OrderBy(p => p.Name)
-                : jObject.Properties();
-
-            foreach (var property in properties)
+            foreach (var property in jObject.Properties())
             {
                 var key = CBORObject.FromObject(property.Name);
                 var value = ConvertJTokenToCbor(property.Value);
@@ -416,19 +412,6 @@ namespace FormatConverter.Cbor
                 }
             }
 
-            if (!string.IsNullOrEmpty(Config.DateFormat))
-            {
-                object formattedDate = Config.DateFormat!.ToLower() switch
-                {
-                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                    "unix" => ((DateTimeOffset)dateTime).ToUnixTimeSeconds(),
-                    "rfc3339" => dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz"),
-                    "timestamp" => ((DateTimeOffset)dateTime).ToUnixTimeMilliseconds(),
-                    _ => dateTime.ToString(Config.DateFormat)
-                };
-                return CBORObject.FromObject(formattedDate);
-            }
-
             return CBORObject.FromObject(dateTime);
         }
 
@@ -464,34 +447,10 @@ namespace FormatConverter.Cbor
                 }
             }
 
-            // Formato normal
-            if (!string.IsNullOrEmpty(Config.NumberFormat))
-            {
-                return Config.NumberFormat.ToLower() switch
-                {
-                    "hexadecimal" => CBORObject.FromObject(value),
-                    _ => CBORObject.FromObject(value)
-                };
-            }
-
             if (value >= int.MinValue && value <= int.MaxValue)
                 return CBORObject.FromObject((int)value);
 
             return CBORObject.FromObject(value);
-        }
-
-        private double FormatNumberValue(double number)
-        {
-            if (!string.IsNullOrEmpty(Config.NumberFormat))
-            {
-                return Config.NumberFormat.ToLower() switch
-                {
-                    "scientific" => double.Parse(number.ToString("E")),
-                    "hexadecimal" => (long)number,
-                    _ => number
-                };
-            }
-            return number;
         }
 
         private CBOREncodeOptions GetCborEncodeOptions()
