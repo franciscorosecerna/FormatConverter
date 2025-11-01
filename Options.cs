@@ -133,9 +133,6 @@ namespace FormatConverter
         [Option("msgpack-contractless", Default = true, HelpText = "Use contractless resolver for MessagePack (allows dynamic types)")]
         public bool MessagePackUseContractless { get; set; } = true;
 
-        [Option("msgpack-lz4", HelpText = "Enable LZ4 compression for MessagePack output")]
-        public bool MessagePackLz4Compression { get; set; }
-
         [Option("msgpack-old-spec", HelpText = "Use old MessagePack specification format")]
         public bool MessagePackOldSpec { get; set; }
 
@@ -171,6 +168,7 @@ namespace FormatConverter
 
         [Option("bxml-compressArrays", Default = true, HelpText = "Enables compression for homogeneous arrays to reduce output size")]
         public bool CompressArrays { get; set; } = true;
+
         #endregion
 
         #region Compression Options
@@ -181,13 +179,10 @@ namespace FormatConverter
         #endregion
 
         #region Validation Options
-
-        [Option("validate", MetaValue = "SCHEMA", HelpText = "Validate input against specified schema file")]
-        public string? SchemaFile { get; set; }
-
+        
         [Option("strict", HelpText = "Enable strict validation mode (fail on warnings)")]
         public bool StrictMode { get; set; }
-
+        
         [Option("ignore-errors", HelpText = "Continue processing even if non-critical errors occur")]
         public bool IgnoreErrors { get; set; }
 
@@ -204,8 +199,6 @@ namespace FormatConverter
         #endregion
 
         #region Format Options
-
-
 
         [Option("number-format", MetaValue = "FORMAT", HelpText = "Number format for output (decimal, hexadecimal, scientific, binary, raw)")]
         public string? NumberFormat { get; set; }

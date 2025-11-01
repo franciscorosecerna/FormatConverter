@@ -81,7 +81,6 @@ If you omit `-o <output-file>`, the tool auto-generates one with the correct ext
 
 #### MessagePack
 - `--msgpack-contractless` → use contractless resolver (default: true)
-- `--msgpack-lz4` → enable LZ4 compression
 - `--msgpack-old-spec` → use legacy format
 
 #### CBOR
@@ -99,7 +98,6 @@ If you omit `-o <output-file>`, the tool auto-generates one with the correct ext
 #### Other
 
 - `--compress <gzip|deflate|brotli|lz4>` → compress output (Base64 encoded)
-- `--validate <schema>` → validate against schema file
 - `--strict` → fail on warnings
 - `--ignore-errors` → keep going even on non-critical errors
 - `--streaming` → stream large files
