@@ -14,58 +14,85 @@ namespace FormatConverter.MessagePack
 
         public override JToken Parse(string input)
         {
+            Logger.WriteTrace("Parse: Starting MessagePack parsing");
+
             if (string.IsNullOrWhiteSpace(input))
             {
+                Logger.WriteWarning("Parse: Input is null or empty");
                 return Config.IgnoreErrors
                     ? new JObject()
                     : throw new ArgumentException("MessagePack input cannot be null or empty", nameof(input));
             }
 
+            Logger.WriteDebug($"Parse: Input length: {input.Length} characters");
+
             try
             {
                 var bytes = DecodeInput(input);
+                Logger.WriteDebug($"Parse: Decoded to {bytes.Length} bytes");
+
                 var options = GetMessagePackOptions();
                 var obj = MessagePackSerializer.Deserialize<object>(bytes, options)
                     ?? throw new FormatException("MessagePack deserialization returned null");
 
+                Logger.WriteDebug($"Parse: Deserialized to {obj.GetType().Name}");
                 var token = ConvertObjectToJToken(obj);
+                Logger.WriteTrace($"Parse: Converted to token type {token.Type}");
 
                 if (Config.MaxDepth.HasValue)
                 {
+                    Logger.WriteDebug($"Parse: Validating depth (max: {Config.MaxDepth.Value})");
                     ValidateDepth(token, Config.MaxDepth.Value);
                 }
 
+                Logger.WriteSuccess("Parse: MessagePack parsed successfully");
                 return token;
             }
             catch (Exception ex) when (ex is not FormatException && ex is not ArgumentException)
             {
+                Logger.WriteError($"Parse: Exception occurred - {ex.Message}");
                 return HandleParsingError(ex, input);
             }
         }
 
         public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken = default)
         {
+            Logger.WriteInfo($"ParseStream: Starting stream parsing for '{path}'");
+
             if (string.IsNullOrWhiteSpace(path))
+            {
+                Logger.WriteError("ParseStream: Path is null or empty");
                 throw new ArgumentException("Path cannot be null or empty.", nameof(path));
+            }
 
             if (!File.Exists(path))
+            {
+                Logger.WriteError($"ParseStream: File not found at '{path}'");
                 throw new FileNotFoundException("Input file not found.", path);
+            }
 
+            Logger.WriteDebug($"ParseStream: File found, size: {new FileInfo(path).Length} bytes");
             return ParseStreamInternal(path, cancellationToken);
         }
 
         private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
         {
+            Logger.WriteTrace("ParseStreamInternal: Opening file stream");
+
             using var fileStream = File.OpenRead(path);
 
             var fileSize = fileStream.Length;
             var showProgress = fileSize > 10_485_760;
             var options = GetMessagePackOptions();
 
+            Logger.WriteDebug($"ParseStreamInternal: File size: {fileSize:N0} bytes, progress logging: {showProgress}");
+
             const int BufferSize = 8192;
             var arrayPool = ArrayPool<byte>.Shared;
             byte[] buffer = arrayPool.Rent(BufferSize);
             using var memoryStream = new MemoryStream();
+
+            Logger.WriteTrace($"ParseStreamInternal: Using buffer size {BufferSize}");
 
             int bytesRead;
             int tokensProcessed = 0;
@@ -77,6 +104,7 @@ namespace FormatConverter.MessagePack
                     cancellationToken.ThrowIfCancellationRequested();
 
                     memoryStream.Write(buffer, 0, bytesRead);
+                    Logger.WriteTrace($"ParseStreamInternal: Read {bytesRead} bytes, memory stream now {memoryStream.Length} bytes");
 
                     var sequence = new ReadOnlySequence<byte>(memoryStream.GetBuffer(), 0, (int)memoryStream.Length);
                     var reader = new MessagePackReader(sequence);
@@ -95,6 +123,7 @@ namespace FormatConverter.MessagePack
                                 Logger.WriteInfo($"Processing: {progress:F1}% ({tokensProcessed} elements)");
                             }
 
+                            Logger.WriteTrace($"ParseStreamInternal: Token {tokensProcessed} parsed, consumed {consumed} bytes");
                             yield return token;
                         }
                         else if (error != null)
@@ -106,6 +135,7 @@ namespace FormatConverter.MessagePack
                             }
                             else
                             {
+                                Logger.WriteError($"ParseStreamInternal: Fatal error - {error.Message}");
                                 throw error;
                             }
                         }
@@ -124,11 +154,14 @@ namespace FormatConverter.MessagePack
                                 memoryStream.SetLength(0);
                             }
 
+                            Logger.WriteTrace($"ParseStreamInternal: Consumed {consumed} bytes, {remaining} bytes remaining");
+
                             sequence = new ReadOnlySequence<byte>(memoryStream.GetBuffer(), 0, (int)memoryStream.Length);
                             reader = new MessagePackReader(sequence);
                         }
                         else
                         {
+                            Logger.WriteTrace("ParseStreamInternal: No data consumed, need more data");
                             break;
                         }
                     }
@@ -136,6 +169,8 @@ namespace FormatConverter.MessagePack
 
                 if (memoryStream.Length > 0)
                 {
+                    Logger.WriteWarning($"ParseStreamInternal: {memoryStream.Length} bytes of incomplete data at end of file");
+
                     if (Config.IgnoreErrors)
                     {
                         Logger.WriteWarning($"{memoryStream.Length} bytes of incomplete MessagePack data at end of file");
@@ -145,6 +180,7 @@ namespace FormatConverter.MessagePack
                     }
                     else
                     {
+                        Logger.WriteError($"ParseStreamInternal: Incomplete object at end ({memoryStream.Length} bytes)");
                         throw new FormatException($"Incomplete MessagePack object at end of file ({memoryStream.Length} bytes remaining)");
                     }
                 }
@@ -153,9 +189,12 @@ namespace FormatConverter.MessagePack
                 {
                     Logger.WriteInfo($"Completed: {tokensProcessed} objects processed");
                 }
+
+                Logger.WriteSuccess($"ParseStreamInternal: Stream parsing completed. Total tokens: {tokensProcessed}");
             }
             finally
             {
+                Logger.WriteTrace("ParseStreamInternal: Returning buffer to pool");
                 arrayPool.Return(buffer);
             }
         }
@@ -164,12 +203,16 @@ namespace FormatConverter.MessagePack
     TryReadNextMessagePackToken(ref MessagePackReader reader, MessagePackSerializerOptions options, string path)
         {
             var consumedBefore = reader.Consumed;
+            Logger.WriteTrace($"TryReadNextMessagePackToken: Starting read at offset {consumedBefore}");
 
             try
             {
                 var obj = MessagePackSerializer.Deserialize<object>(ref reader, options);
                 if (obj != null)
                 {
+                    var consumed = reader.Consumed - consumedBefore;
+                    Logger.WriteTrace($"TryReadNextMessagePackToken: Deserialized {obj.GetType().Name}, consumed {consumed} bytes");
+
                     var token = ConvertObjectToJToken(obj);
 
                     if (Config.MaxDepth.HasValue)
@@ -177,23 +220,27 @@ namespace FormatConverter.MessagePack
                         ValidateDepth(token, Config.MaxDepth.Value);
                     }
 
-                    return (true, token, reader.Consumed - consumedBefore, null);
+                    return (true, token, consumed, null);
                 }
 
+                Logger.WriteTrace("TryReadNextMessagePackToken: Deserialization returned null");
                 return (false, null, reader.Consumed - consumedBefore, null);
             }
             catch (MessagePackSerializationException ex)
             {
                 if (reader.Consumed == consumedBefore)
                 {
+                    Logger.WriteTrace($"TryReadNextMessagePackToken: No data consumed, need more data - {ex.Message}");
                     return (false, null, 0, null);
                 }
 
+                Logger.WriteWarning($"TryReadNextMessagePackToken: Serialization error at offset {reader.Consumed} - {ex.Message}");
                 return (false, null, reader.Consumed - consumedBefore,
                     new FormatException($"Invalid MessagePack data at offset {reader.Consumed}: {ex.Message}", ex));
             }
             catch (Exception ex)
             {
+                Logger.WriteWarning($"TryReadNextMessagePackToken: Unexpected error - {ex.Message}");
                 return (false, null, reader.Consumed - consumedBefore,
                     new FormatException($"Unexpected MessagePack error in {path}: {ex.Message}", ex));
             }
@@ -202,6 +249,7 @@ namespace FormatConverter.MessagePack
         private void ValidateDepth(JToken token, int maxDepth)
         {
             var actualDepth = CalculateDepth(token);
+            Logger.WriteDebug($"ValidateDepth: Calculated depth: {actualDepth}, max allowed: {maxDepth}");
 
             if (actualDepth > maxDepth)
             {
@@ -213,6 +261,7 @@ namespace FormatConverter.MessagePack
                 }
                 else
                 {
+                    Logger.WriteError($"ValidateDepth: {message}");
                     throw new FormatException(message);
                 }
             }
@@ -250,6 +299,7 @@ namespace FormatConverter.MessagePack
                 return CreateErrorToken(ex, input);
             }
 
+            Logger.WriteError($"HandleParsingError: Fatal error - {ex.Message}");
             throw new FormatException($"Invalid MessagePack: {ex.Message}", ex);
         }
 
@@ -312,25 +362,31 @@ namespace FormatConverter.MessagePack
 
         private MessagePackSerializerOptions GetMessagePackOptions()
         {
+            Logger.WriteTrace("GetMessagePackOptions: Creating MessagePack options");
+
             MessagePackSerializerOptions options;
             if (Config.MessagePackUseContractless)
             {
+                Logger.WriteDebug("GetMessagePackOptions: Using ContractlessStandardResolver");
                 options = MessagePackSerializerOptions.Standard
                     .WithResolver(ContractlessStandardResolver.Instance);
             }
             else
             {
+                Logger.WriteDebug("GetMessagePackOptions: Using StandardResolver");
                 options = MessagePackSerializerOptions.Standard
                     .WithResolver(StandardResolver.Instance);
             }
 
             if (Config.MessagePackOldSpec)
             {
+                Logger.WriteDebug("GetMessagePackOptions: Using old spec compatibility");
                 options = options.WithOldSpec();
             }
 
             if (Config.StrictMode)
             {
+                Logger.WriteDebug("GetMessagePackOptions: Applying strict mode security");
                 options = options.WithSecurity(MessagePackSecurity.UntrustedData);
             }
 
@@ -339,6 +395,8 @@ namespace FormatConverter.MessagePack
 
         private JToken ConvertObjectToJToken(object? obj, int currentDepth = 100)
         {
+            Logger.WriteTrace($"ConvertObjectToJToken: Converting at depth {currentDepth}, type: {obj?.GetType().Name ?? "null"}");
+
             if (Config.MaxDepth.HasValue && currentDepth > Config.MaxDepth.Value)
             {
                 var message = $"MessagePack structure depth ({currentDepth}) exceeds maximum allowed depth ({Config.MaxDepth.Value}) during conversion";
@@ -349,6 +407,7 @@ namespace FormatConverter.MessagePack
                     return new JValue($"[Depth limit exceeded at level {currentDepth}]");
                 }
 
+                Logger.WriteError($"ConvertObjectToJToken: {message}");
                 throw new FormatException(message);
             }
 
@@ -387,6 +446,8 @@ namespace FormatConverter.MessagePack
 
         private JObject ConvertDictionaryToJObject(Dictionary<object, object> dict, int currentDepth)
         {
+            Logger.WriteTrace($"ConvertDictionaryToJObject: Converting dictionary with {dict.Count} entries at depth {currentDepth}");
+
             var result = new JObject();
             foreach (var kvp in dict)
             {
@@ -398,6 +459,8 @@ namespace FormatConverter.MessagePack
 
         private JObject ConvertStringDictionaryToJObject(Dictionary<string, object> dict, int currentDepth)
         {
+            Logger.WriteTrace($"ConvertStringDictionaryToJObject: Converting string dictionary with {dict.Count} entries at depth {currentDepth}");
+
             var result = new JObject();
             foreach (var kvp in dict)
                 result[kvp.Key] = ConvertObjectToJToken(kvp.Value, currentDepth + 1);
@@ -406,6 +469,8 @@ namespace FormatConverter.MessagePack
 
         private JArray ConvertListToJArray(List<object> list, int currentDepth)
         {
+            Logger.WriteTrace($"ConvertListToJArray: Converting list with {list.Count} items at depth {currentDepth}");
+
             var result = new JArray();
             foreach (var item in list)
                 result.Add(ConvertObjectToJToken(item, currentDepth + 1));
@@ -414,6 +479,8 @@ namespace FormatConverter.MessagePack
 
         private JArray ConvertArrayToJArray(Array array, int currentDepth)
         {
+            Logger.WriteTrace($"ConvertArrayToJArray: Converting array with {array.Length} items at depth {currentDepth}");
+
             var result = new JArray();
             foreach (var item in array)
                 result.Add(ConvertObjectToJToken(item, currentDepth + 1));
@@ -423,9 +490,11 @@ namespace FormatConverter.MessagePack
         private JToken ConvertComplexObjectToJToken(object obj, int currentDepth)
         {
             var type = obj.GetType();
+            Logger.WriteTrace($"ConvertComplexObjectToJToken: Converting complex object of type {type.Name} at depth {currentDepth}");
 
             if (!type.IsClass || type == typeof(string))
             {
+                Logger.WriteTrace($"ConvertComplexObjectToJToken: Non-class or string type, converting to string");
                 return new JValue(obj.ToString());
             }
 
@@ -434,6 +503,7 @@ namespace FormatConverter.MessagePack
                 var result = new JObject();
 
                 var properties = PropertyCache.GetOrAdd(type, t => t.GetProperties());
+                Logger.WriteDebug($"ConvertComplexObjectToJToken: Processing {properties.Length} properties from {type.Name}");
 
                 foreach (var prop in properties)
                 {
@@ -459,8 +529,10 @@ namespace FormatConverter.MessagePack
                 if (Config.IgnoreErrors)
                 {
                     Logger.WriteWarning($"Failed to convert complex object: {ex.Message}");
-                    return new JValue($"[Complex object: {obj.ToString()}]");
+                    return new JValue($"[Complex object: {obj}]");
                 }
+
+                Logger.WriteError($"ConvertComplexObjectToJToken: Failed to convert - {ex.Message}");
                 throw new FormatException($"Failed to convert complex object: {ex.Message}", ex);
             }
         }
