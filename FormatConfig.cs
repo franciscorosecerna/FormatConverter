@@ -15,6 +15,7 @@ namespace FormatConverter
         public bool NoMetadata { get; set; }
         public bool SortKeys { get; set; }
         public Encoding Encoding { get; set; } = Encoding.UTF8;
+        public VerbosityLevel Verbosity { get; set; } = VerbosityLevel.None;
 
         //json specific
         public bool JsonEscapeUnicode { get; set; }
@@ -84,6 +85,7 @@ namespace FormatConverter
                 PrettyPrint = options.PrettyPrint && !options.Minify,
                 NoMetadata = options.NoMetadata,
                 SortKeys = options.SortKeys,
+                Verbosity = options.Verbosity,
 
                 //JSON
                 JsonEscapeUnicode = options.JsonEscapeUnicode,

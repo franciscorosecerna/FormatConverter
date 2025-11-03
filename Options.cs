@@ -1,4 +1,5 @@
 ﻿using CommandLine;
+using FormatConverter.Logger;
 
 namespace FormatConverter
 {
@@ -7,10 +8,10 @@ namespace FormatConverter
         [Option('i', "input", MetaValue = "FILE", HelpText = "Path to input file (or '-' for stdin)", Required = true)]
         public string InputFile { get; set; } = "";
 
-        [Option("input-format", MetaValue = "FORMAT", HelpText = "Format of the input data (json, xml, yaml, messagepack, cbor, protobuf, bxml)", Required = true)]
+        [Option("input-format", MetaValue = "FORMAT", HelpText = "Format of the input data (json, xml, yaml, messagepack, cbor, protobuf, bxml, toml)", Required = true)]
         public string InputFormat { get; set; } = "";
 
-        [Option("output-format", MetaValue = "FORMAT", HelpText = "Desired format for the output data (json, xml, yaml, messagepack, cbor, protobuf, bxml)", Required = true)]
+        [Option("output-format", MetaValue = "FORMAT", HelpText = "Desired format for the output data (json, xml, yaml, messagepack, cbor, protobuf, bxml, toml)", Required = true)]
         public string OutputFormat { get; set; } = "";
 
         [Option('o', "output", MetaValue = "FILE", HelpText = "Output file path (if not specified, will be auto-generated based on input file name)")]
@@ -19,8 +20,8 @@ namespace FormatConverter
         [Option('f', "force", HelpText = "Overwrite output file if it already exists")]
         public bool Force { get; set; }
 
-        [Option('v', "verbose", HelpText = "Enable detailed output")]
-        public bool Verbose { get; set; }
+        [Option('v', "verbosity", MetaValue = "LEVEL", HelpText = "Set verbosity level (None, Error, Warning, Info, Debug, Trace)")]
+        public VerbosityLevel Verbosity { get; set; } = VerbosityLevel.Info;
 
         [Option("version", HelpText = "Show version info and exit")]
         public bool Version { get; set; }

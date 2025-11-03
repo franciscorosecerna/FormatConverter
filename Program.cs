@@ -2,6 +2,7 @@
 using FormatConverter.Logger;
 using K4os.Compression.LZ4;
 using K4os.Compression.LZ4.Streams;
+using Newtonsoft.Json.Linq;
 using System.IO.Compression;
 
 namespace FormatConverter
@@ -12,12 +13,19 @@ namespace FormatConverter
         public static readonly string[] BinaryFormats = ["messagepack", "cbor", "protobuf", "bxml"];
         internal static readonly string[] sourceArray = ["gzip", "deflate", "brotli", "lz4"];
 
-        private static readonly ConsoleLogger _logger = new();
-
         static int Main(string[] args)
         {
             return Parser.Default.ParseArguments<Options>(args)
-                .MapResult(Run, HandleParseErrors);
+                .MapResult(opts =>
+                {
+                    var logger = new ConsoleLogger
+                    {
+                        Verbosity = opts.Verbosity
+                    };
+
+                    return Run(opts, logger);
+                },
+                HandleParseErrors);
         }
 
         internal static int HandleParseErrors(IEnumerable<Error> errs)
@@ -27,57 +35,60 @@ namespace FormatConverter
             return -2;
         }
 
-        internal static int Run(Options opts)
+        internal static int Run(Options opts, ILogger logger)
         {
             try
             {
                 if (opts.Version)
                 {
-                    ShowVersionInfo();
+                    ShowVersionInfo(logger);
                     return 0;
                 }
 
                 if (opts.ListFormats)
                 {
-                    ShowSupportedFormats();
+                    ShowSupportedFormats(logger);
                     return 0;
                 }
 
-                ValidateOptions(opts);
+                logger.WriteDebug($"Verbosity level: {logger.Verbosity}");
+
+                ValidateOptions(opts, logger);
+
                 var formatConfig = FormatConfig.FromOptions(opts);
                 formatConfig.ValidateConfiguration();
 
-                if (opts.Verbose)
-                {
-                    _logger.WriteInfo("Configuration:");
-                    Console.WriteLine(formatConfig);
-                }
+                logger.WriteInfo("Configuration:");
+                logger.WriteInfo(formatConfig.ToString());
 
                 if (opts.UseStreaming)
                 {
-                    _logger.WriteInfo("Streaming mode enabled.");
+                    logger.WriteInfo("Streaming mode enabled.");
                     using var cts = new CancellationTokenSource();
 
                     Console.CancelKeyPress += (s, e) =>
                     {
-                        _logger.WriteWarning("Cancellation requested (Ctrl+C)...");
+                        logger.WriteWarning("Cancellation requested (Ctrl+C)...");
                         e.Cancel = true;
                         cts.Cancel();
                     };
-                    return RunStreamingConversion(opts, formatConfig, _logger, cts.Token);
+
+                    return RunStreamingConversion(opts, formatConfig, logger, cts.Token);
                 }
 
-                var result = ProcessRegularConversion(opts, formatConfig, _logger);
-                return result;
+                return ProcessRegularConversion(opts, formatConfig, logger);
             }
             catch (ArgumentException ex)
             {
-                _logger.WriteError($"Configuration error: {ex.Message}");
+                logger.WriteError($"Configuration error: {ex.Message}");
+                logger.WriteDebug($"Stack trace: {ex.StackTrace}");
                 return 3;
             }
             catch (Exception ex)
             {
-                _logger.WriteError($"Unexpected error: {ex.Message}");
+                logger.WriteError($"Unexpected error: {ex.Message}");
+                logger.WriteDebug($"Exception type: {ex.GetType().Name}");
+                logger.WriteDebug($"Stack trace: {ex.StackTrace}");
 #if DEBUG
                 Console.Error.WriteLine(ex);
 #endif
@@ -89,6 +100,8 @@ namespace FormatConverter
         internal static int ProcessRegularConversion(Options opts, FormatConfig config, ILogger logger)
         {
             var supported = FormatStrategyFactory.GetSupportedFormats();
+
+            logger.WriteDebug($"Supported formats: {string.Join(", ", supported)}");
 
             if (!supported.Contains(opts.InputFormat.ToLower()) ||
                 !supported.Contains(opts.OutputFormat.ToLower()))
@@ -106,21 +119,33 @@ namespace FormatConverter
 
             try
             {
+                logger.WriteDebug($"Reading input from: {opts.InputFile}");
+
                 var inputText = ReadInput(opts.InputFile, opts.InputFormat, config, logger);
+
+                logger.WriteDebug($"Input text length: {inputText.Length} characters");
 
                 var inputStrategy = FormatStrategyFactory.CreateInputStrategy(opts.InputFormat, config);
                 var outputStrategy = FormatStrategyFactory.CreateOutputStrategy(opts.OutputFormat, config);
 
-                if (opts.Verbose) logger.WriteInfo($"Parsing {opts.InputFormat}...");
+                logger.WriteInfo($"Parsing {opts.InputFormat}...");
                 var parsedData = inputStrategy.Parse(inputText);
 
-                if (opts.Verbose) logger.WriteInfo($"Serializing to {opts.OutputFormat}...");
-                string result = outputStrategy.Serialize(parsedData);
+                logger.WriteDebug($"Parsed data type: {parsedData?.Type}");
+
+                logger.WriteInfo($"Serializing to {opts.OutputFormat}...");
+                string result = outputStrategy.Serialize(parsedData!);
+
+                logger.WriteDebug($"Serialized output length: {result.Length} characters");
 
                 if (!string.IsNullOrEmpty(config.Compression))
                 {
-                    if (opts.Verbose) logger.WriteInfo($"Applying {config.Compression} compression...");
+                    logger.WriteInfo($"Applying {config.Compression} compression...");
+                    var originalLength = result.Length;
                     result = CompressString(result, config, opts);
+
+                    var compressionRatio = (1 - (double)result.Length / originalLength) * 100;
+                    logger.WriteDebug($"Compression ratio: {compressionRatio:F2}%");
                 }
 
                 return WriteResult(opts, config, result, logger);
@@ -128,6 +153,7 @@ namespace FormatConverter
             catch (Exception ex)
             {
                 logger.WriteError($"Conversion error: {ex.Message}");
+                logger.WriteDebug($"Exception details: {ex}");
                 return 4;
             }
         }
@@ -156,8 +182,9 @@ namespace FormatConverter
                 return 2;
             }
 
-            if (opts.Verbose)
-                logger.WriteInfo($"Streaming from {opts.InputFile} → {outputFile}");
+            logger.WriteInfo($"Streaming from {opts.InputFile} → {outputFile}");
+            logger.WriteDebug($"Input format: {opts.InputFormat}, Output format: {opts.OutputFormat}");
+            logger.WriteDebug($"Encoding: {config.Encoding.EncodingName}");
 
             using var inputStream = opts.InputFile == "-"
                 ? Console.OpenStandardInput()
@@ -170,6 +197,8 @@ namespace FormatConverter
                 : File.Create(outputFile);
 
             int count = 0;
+            var startTime = DateTime.UtcNow;
+
             try
             {
                 foreach (var tokenData in inputStrategy.ParseStream(opts.InputFile, token))
@@ -179,22 +208,34 @@ namespace FormatConverter
                     outputStrategy.SerializeStream([tokenData], outputStream, token);
 
                     count++;
-                    if (opts.Verbose && count % 100 == 0)
+                    if (count % 100 == 0)
+                    {
                         logger.WriteInfo($"Processed {count} records...");
+
+                        var elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
+                        var rate = count / elapsed;
+                        logger.WriteDebug($"Processing rate: {rate:F2} records/sec");
+                    }
                 }
 
-                logger.WriteSuccess($"Streaming conversion completed ({count} records): {opts.InputFormat.ToUpper()} → {opts.OutputFormat.ToUpper()}");
+                var totalTime = (DateTime.UtcNow - startTime).TotalSeconds;
+                logger.WriteSuccess($"Streaming conversion completed ({count} records in {totalTime:F2}s): {opts.InputFormat.ToUpper()} → {opts.OutputFormat.ToUpper()}");
+
+                var avgRate = count / totalTime;
+                logger.WriteDebug($"Average rate: {avgRate:F2} records/sec");
+
                 Console.WriteLine($"Output: {outputFile}");
                 return 0;
             }
             catch (OperationCanceledException)
             {
-                logger.WriteWarning("Conversion canceled by user.");
+                logger.WriteWarning($"Conversion canceled by user after processing {count} records.");
                 return 1;
             }
             catch (Exception ex)
             {
-                logger.WriteError($"Streaming conversion failed: {ex.Message}");
+                logger.WriteError($"Streaming conversion failed at record {count}: {ex.Message}");
+                logger.WriteDebug($"Exception details: {ex}");
 #if DEBUG
                 Console.Error.WriteLine(ex);
 #endif
@@ -245,7 +286,6 @@ namespace FormatConverter
 
             //MessagePack
             !opts.MessagePackUseContractless ||
-            opts.MessagePackLz4Compression ||
             opts.MessagePackOldSpec ||
 
             //CBOR
@@ -301,6 +341,7 @@ namespace FormatConverter
         {
             if (path == "-")
             {
+                logger.WriteDebug("Reading from standard input");
                 using var reader = new StreamReader(Console.OpenStandardInput(), config.Encoding);
                 return reader.ReadToEnd();
             }
@@ -309,6 +350,8 @@ namespace FormatConverter
                 throw new FileNotFoundException($"Input file '{path}' not found.");
 
             var fileInfo = new FileInfo(path);
+
+            logger.WriteDebug($"Input file size: {fileInfo.Length} bytes ({fileInfo.Length / 1024.0:F2} KB)");
 
             if (fileInfo.Length > 50 * 1024 * 1024)
             {
@@ -328,6 +371,7 @@ namespace FormatConverter
         {
             if (opts.InputFile == "-")
             {
+                logger.WriteDebug("Writing to standard output");
                 WriteToStream(Console.OpenStandardOutput(), result, config);
                 return 0;
             }
@@ -340,32 +384,34 @@ namespace FormatConverter
                 return 2;
             }
 
-            FileLogger? fileLogger = null;
             try
             {
-                if (!BinaryFormats.Contains(opts.OutputFormat.ToLower()))
-                {
-                    fileLogger = new FileLogger(outputFile, config.Encoding, includeTimestamps: false);
-                    fileLogger.WriteSuccess(result);
-                }
-                else
-                {
-                    WriteOutput(outputFile, result, opts.OutputFormat, config);
-                }
+                logger.WriteDebug($"Writing output to: {outputFile}");
+
+                WriteOutput(outputFile, result, opts.OutputFormat, config);
+
+                var fileInfo = new FileInfo(outputFile);
+                logger.WriteDebug($"Output file size: {fileInfo.Length} bytes ({fileInfo.Length / 1024.0:F2} KB)");
 
                 logger.WriteSuccess($"Success: {opts.InputFormat.ToUpper()} → {opts.OutputFormat.ToUpper()}");
                 Console.WriteLine($"Output: {outputFile}");
                 return 0;
             }
-            finally
+            catch (Exception ex)
             {
-                fileLogger?.Dispose();
+                logger.WriteError($"Failed to write output file: {ex.Message}");
+                logger.WriteDebug($"Exception details: {ex}");
+                return 4;
             }
         }
 
         internal static void WriteOutput(string path, string content, string format, FormatConfig config)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
 
             if (BinaryFormats.Contains(format.ToLower()))
                 File.WriteAllBytes(path, Convert.FromBase64String(content));
@@ -400,24 +446,26 @@ namespace FormatConverter
             _ => ".out"
         };
 
-        internal static void ShowVersionInfo()
+        internal static void ShowVersionInfo(ILogger logger)
         {
-            _logger.WriteInfo($"FormatConverter CLI v{VERSION}");
-            _logger.WriteInfo("Usage examples:");
-            _logger.WriteInfo("  FormatConverter -i data.json --input-format json --output-format xml --pretty");
-            _logger.WriteInfo("  FormatConverter -i data.xml --input-format xml --output-format yaml --minify");
-            _logger.WriteInfo("  FormatConverter -i data.json --input-format json --output-format bxml --streaming");
+            logger.WriteInfo($"FormatConverter CLI v{VERSION}");
+            logger.WriteInfo("Usage examples:");
+            logger.WriteInfo("  FormatConverter -i data.json --input-format json --output-format xml --pretty");
+            logger.WriteInfo("  FormatConverter -i data.xml --input-format xml --output-format yaml --minify");
+            logger.WriteInfo("  FormatConverter -i data.json --input-format json --output-format bxml --streaming");
         }
 
-        internal static void ShowSupportedFormats()
+        internal static void ShowSupportedFormats(ILogger logger)
         {
-            _logger.WriteInfo("Supported formats:");
+            logger.WriteInfo("Supported formats:");
             foreach (var f in FormatStrategyFactory.GetSupportedFormats())
-                Console.WriteLine($"  - {f}");
+                logger.WriteInfo($"  - {f}");
         }
 
-        internal static void ValidateOptions(Options opts)
+        internal static void ValidateOptions(Options opts, ILogger logger)
         {
+            logger.WriteDebug("Validating command line options");
+
             if (string.IsNullOrEmpty(opts.InputFile))
                 throw new ArgumentException("Input file is required");
 
@@ -429,6 +477,8 @@ namespace FormatConverter
             {
                 throw new ArgumentException($"Unsupported compression type: {opts.Compression}");
             }
+
+            logger.WriteDebug("Options validation passed");
         }
         #endregion
     }

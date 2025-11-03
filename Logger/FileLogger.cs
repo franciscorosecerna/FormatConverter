@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -16,7 +17,9 @@ namespace FormatConverter.Logger
         private readonly bool _includeTimestamps;
         private readonly Encoding _encoding;
 
-        public FileLogger(string logFilePath, Encoding encoding,bool includeTimestamps = true)
+        public VerbosityLevel Verbosity { get; set; } = VerbosityLevel.None;
+
+        public FileLogger(string logFilePath, Encoding encoding, bool includeTimestamps = true)
         {
             var directory = Path.GetDirectoryName(logFilePath);
             if (!string.IsNullOrEmpty(directory))
@@ -30,20 +33,29 @@ namespace FormatConverter.Logger
             _includeTimestamps = includeTimestamps;
         }
 
-        public void WriteError(string message)
+        public void Write(VerbosityLevel level, string message)
         {
-            WriteLine("ERROR", message);
+            if (level > Verbosity)
+                return;
+
+            string levelName = level switch
+            {
+                VerbosityLevel.Error => "ERROR",
+                VerbosityLevel.Warning => "WARNING",
+                VerbosityLevel.Info => "INFO",
+                VerbosityLevel.Debug => "DEBUG",
+                VerbosityLevel.Trace => "TRACE",
+                _ => "UNKNOWN"
+            };
+
+            WriteLine(levelName, message);
         }
 
-        public void WriteWarning(string message)
-        {
-            WriteLine("WARNING", message);
-        }
-
-        public void WriteInfo(string message)
-        {
-            WriteLine("INFO", message);
-        }
+        public void WriteError(string message) => Write(VerbosityLevel.Error, message);
+        public void WriteWarning(string message) => Write(VerbosityLevel.Warning, message);
+        public void WriteInfo(string message) => Write(VerbosityLevel.Info, message);
+        public void WriteDebug(string message) => Write(VerbosityLevel.Debug, message);
+        public void WriteTrace(string message) => Write(VerbosityLevel.Trace, message);
 
         public void WriteSuccess(string message)
         {
@@ -51,7 +63,7 @@ namespace FormatConverter.Logger
             {
                 if (_includeTimestamps)
                 {
-                    var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                    var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
                     _writer.WriteLine($"[{timestamp}] {message}");
                 }
                 else
@@ -72,7 +84,7 @@ namespace FormatConverter.Logger
             {
                 if (_includeTimestamps)
                 {
-                    var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                    var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
                     _writer.WriteLine($"[{timestamp}] [{level}] {message}");
                 }
                 else

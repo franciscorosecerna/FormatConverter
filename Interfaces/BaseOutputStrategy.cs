@@ -25,6 +25,7 @@ namespace FormatConverter.Interfaces
         public virtual void Configure(FormatConfig config)
         {
             Config = config ?? throw new ArgumentNullException(nameof(config));
+            Logger.Verbosity = config.Verbosity;
         }
 
         /// <summary>
