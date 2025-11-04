@@ -10,44 +10,57 @@ namespace FormatConverter.Cbor
     {
         public override string Serialize(JToken data)
         {
-            if (data == null)
-                throw new ArgumentNullException(nameof(data));
+            Logger.WriteTrace("Serialize: Starting CBOR serialization");
 
+            ArgumentNullException.ThrowIfNull(data);
+
+            Logger.WriteDebug($"Serialize: Input token type: {data.Type}");
             var processed = PreprocessToken(data);
             var result = SerializeToken(processed);
 
             if (Config.StrictMode)
             {
+                Logger.WriteDebug("Serialize: Validating CBOR in strict mode");
                 ValidateCbor(result);
             }
 
+            Logger.WriteSuccess($"Serialize: CBOR serialization completed ({result.Length} characters)");
             return result;
         }
 
         public override void SerializeStream(IEnumerable<JToken> data, Stream output, CancellationToken cancellationToken = default)
         {
-            if (data == null)
-                throw new ArgumentNullException(nameof(data));
-            if (output == null)
-                throw new ArgumentNullException(nameof(output));
+            Logger.WriteInfo("SerializeStream: Starting stream serialization");
+
+            ArgumentNullException.ThrowIfNull(data);
+            ArgumentNullException.ThrowIfNull(output);
 
             var options = GetCborEncodeOptions();
             var chunkSize = GetChunkSize();
             var isBinaryOutput = IsBinaryOutput();
 
+            Logger.WriteDebug($"SerializeStream: Chunk size: {chunkSize}, Binary output: {isBinaryOutput}");
+
             if (isBinaryOutput)
             {
+                Logger.WriteDebug("SerializeStream: Using binary serialization");
                 SerializeStreamBinary(data, output, options, chunkSize, cancellationToken);
             }
             else
             {
+                Logger.WriteDebug("SerializeStream: Using text serialization");
                 SerializeStreamText(data, output, options, chunkSize, cancellationToken);
             }
+
+            Logger.WriteSuccess("SerializeStream: Stream serialization completed");
         }
 
         private void SerializeStreamBinary(IEnumerable<JToken> data, Stream output, CBOREncodeOptions options, int chunkSize, CancellationToken cancellationToken)
         {
+            Logger.WriteTrace("SerializeStreamBinary: Starting binary stream serialization");
+
             var buffer = new List<JToken>();
+            var totalProcessed = 0;
 
             foreach (var token in data)
             {
@@ -58,7 +71,9 @@ namespace FormatConverter.Cbor
 
                 if (buffer.Count >= chunkSize)
                 {
+                    Logger.WriteTrace($"SerializeStreamBinary: Writing chunk of {buffer.Count} items");
                     WriteChunkToStreamBinary(buffer, options, output, cancellationToken);
+                    totalProcessed += buffer.Count;
                     buffer.Clear();
                 }
             }
@@ -66,18 +81,24 @@ namespace FormatConverter.Cbor
             if (buffer.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                Logger.WriteTrace($"SerializeStreamBinary: Writing final chunk of {buffer.Count} items");
                 WriteChunkToStreamBinary(buffer, options, output, cancellationToken);
+                totalProcessed += buffer.Count;
             }
 
             output.Flush();
+            Logger.WriteSuccess($"SerializeStreamBinary: Completed. Total items: {totalProcessed}");
         }
 
         private void SerializeStreamText(IEnumerable<JToken> data, Stream output, CBOREncodeOptions options, int chunkSize, CancellationToken cancellationToken)
         {
+            Logger.WriteTrace("SerializeStreamText: Starting text stream serialization");
+
             using var writer = new StreamWriter(output, Config.Encoding, 8192, leaveOpen: true);
 
             var buffer = new List<JToken>();
             bool isFirst = true;
+            var totalProcessed = 0;
 
             if (!Config.Minify)
             {
@@ -93,7 +114,9 @@ namespace FormatConverter.Cbor
 
                 if (buffer.Count >= chunkSize)
                 {
+                    Logger.WriteTrace($"SerializeStreamText: Writing chunk of {buffer.Count} items");
                     WriteChunkToStreamText(buffer, options, writer, cancellationToken, ref isFirst);
+                    totalProcessed += buffer.Count;
                     buffer.Clear();
                 }
             }
@@ -101,7 +124,9 @@ namespace FormatConverter.Cbor
             if (buffer.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                Logger.WriteTrace($"SerializeStreamText: Writing final chunk of {buffer.Count} items");
                 WriteChunkToStreamText(buffer, options, writer, cancellationToken, ref isFirst);
+                totalProcessed += buffer.Count;
             }
 
             if (!Config.Minify)
@@ -111,20 +136,34 @@ namespace FormatConverter.Cbor
             }
 
             writer.Flush();
+            Logger.WriteSuccess($"SerializeStreamText: Completed. Total items: {totalProcessed}");
         }
 
         public void SerializeStream(IEnumerable<JToken> data, string outputPath, CancellationToken cancellationToken = default)
         {
+            Logger.WriteInfo($"SerializeStream: Writing to file '{outputPath}'");
+
             if (string.IsNullOrEmpty(outputPath))
+            {
+                Logger.WriteError("SerializeStream: Output path is null or empty");
                 throw new ArgumentNullException(nameof(outputPath));
+            }
 
             using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192);
             SerializeStream(data, fileStream, cancellationToken);
+
+            Logger.WriteSuccess($"SerializeStream: File written successfully to '{outputPath}'");
         }
 
         private void WriteChunkToStreamBinary(List<JToken> items, CBOREncodeOptions options, Stream output, CancellationToken ct)
         {
-            if (items.Count == 0) return;
+            if (items.Count == 0)
+            {
+                Logger.WriteTrace("WriteChunkToStreamBinary: Empty chunk, skipping");
+                return;
+            }
+
+            Logger.WriteTrace($"WriteChunkToStreamBinary: Processing {items.Count} items");
 
             const int initialBufferSize = 8192;
             byte[]? rentedBuffer = null;
@@ -132,6 +171,7 @@ namespace FormatConverter.Cbor
             try
             {
                 rentedBuffer = ArrayPool<byte>.Shared.Rent(initialBufferSize);
+                Logger.WriteTrace($"WriteChunkToStreamBinary: Rented buffer of {initialBufferSize} bytes");
 
                 for (int i = 0; i < items.Count; i++)
                 {
@@ -140,6 +180,7 @@ namespace FormatConverter.Cbor
                     try
                     {
                         var bytes = SerializeTokenToBytes(items[i], options);
+                        Logger.WriteTrace($"WriteChunkToStreamBinary: Item {i} serialized to {bytes.Length} bytes");
 
                         if (bytes.Length <= rentedBuffer.Length)
                         {
@@ -148,6 +189,7 @@ namespace FormatConverter.Cbor
                         }
                         else
                         {
+                            Logger.WriteDebug($"WriteChunkToStreamBinary: Item {i} exceeds buffer, writing directly");
                             output.Write(bytes, 0, bytes.Length);
                         }
                     }
@@ -173,13 +215,20 @@ namespace FormatConverter.Cbor
                 if (rentedBuffer != null)
                 {
                     ArrayPool<byte>.Shared.Return(rentedBuffer);
+                    Logger.WriteTrace("WriteChunkToStreamBinary: Buffer returned to pool");
                 }
             }
         }
 
         private void WriteChunkToStreamText(List<JToken> items, CBOREncodeOptions options, StreamWriter writer, CancellationToken ct, ref bool isFirst)
         {
-            if (items.Count == 0) return;
+            if (items.Count == 0)
+            {
+                Logger.WriteTrace("WriteChunkToStreamText: Empty chunk, skipping");
+                return;
+            }
+
+            Logger.WriteTrace($"WriteChunkToStreamText: Processing {items.Count} items");
 
             const int charBufferSize = 8192;
             char[]? charBuffer = null;
@@ -187,6 +236,7 @@ namespace FormatConverter.Cbor
             try
             {
                 charBuffer = ArrayPool<char>.Shared.Rent(charBufferSize);
+                Logger.WriteTrace($"WriteChunkToStreamText: Rented char buffer of {charBufferSize} chars");
 
                 for (int i = 0; i < items.Count; i++)
                 {
@@ -196,6 +246,7 @@ namespace FormatConverter.Cbor
                     {
                         var bytes = SerializeTokenToBytes(items[i], options);
                         var formatted = FormatOutput(bytes);
+                        Logger.WriteTrace($"WriteChunkToStreamText: Item {i} formatted ({formatted.Length} characters)");
 
                         if (!isFirst && !Config.Minify)
                         {
@@ -246,18 +297,23 @@ namespace FormatConverter.Cbor
                 if (charBuffer != null)
                 {
                     ArrayPool<char>.Shared.Return(charBuffer);
+                    Logger.WriteTrace("WriteChunkToStreamText: Char buffer returned to pool");
                 }
             }
         }
 
         private string SerializeToken(JToken token)
         {
+            Logger.WriteTrace($"SerializeToken: Serializing token type {token.Type}");
+
             try
             {
                 var cborObj = ConvertJTokenToCbor(token);
 
                 if (cborObj == null)
                 {
+                    Logger.WriteWarning("SerializeToken: Failed to convert token to CBOR");
+
                     if (Config.IgnoreErrors)
                     {
                         Logger.WriteWarning("Failed to convert token to CBOR");
@@ -269,6 +325,7 @@ namespace FormatConverter.Cbor
                 var options = GetCborEncodeOptions();
                 var bytes = cborObj.EncodeToBytes(options);
 
+                Logger.WriteDebug($"SerializeToken: Token serialized to {bytes.Length} bytes");
                 return FormatOutput(bytes);
             }
             catch (Exception ex) when (Config.IgnoreErrors)
@@ -280,6 +337,8 @@ namespace FormatConverter.Cbor
 
         private void ValidateCbor(string result)
         {
+            Logger.WriteTrace($"ValidateCbor: Starting validation ({result.Length} characters)");
+
             try
             {
                 var bytes = result.StartsWith("0x") || result.All(c => char.IsDigit(c)
@@ -287,11 +346,18 @@ namespace FormatConverter.Cbor
                     ? ConvertFromHex(result)
                     : Convert.FromBase64String(result);
 
+                Logger.WriteDebug($"ValidateCbor: Validating {bytes.Length} bytes");
                 CBORObject.DecodeFromBytes(bytes);
+                Logger.WriteDebug("ValidateCbor: Validation successful");
             }
             catch (Exception ex) when (!Config.StrictMode)
             {
                 Logger.WriteWarning($"CBOR validation warning: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteError($"ValidateCbor: Validation failed - {ex.Message}");
+                throw;
             }
         }
 
@@ -311,12 +377,17 @@ namespace FormatConverter.Cbor
 
         private byte[] SerializeTokenToBytes(JToken token, CBOREncodeOptions options)
         {
+            Logger.WriteTrace($"SerializeTokenToBytes: Converting token type {token.Type}");
             var cborObj = ConvertJTokenToCbor(token);
-            return cborObj.EncodeToBytes(options);
+            var bytes = cborObj.EncodeToBytes(options);
+            Logger.WriteTrace($"SerializeTokenToBytes: Generated {bytes.Length} bytes");
+            return bytes;
         }
 
         private CBORObject ConvertJTokenToCbor(JToken token)
         {
+            Logger.WriteTrace($"ConvertJTokenToCbor: Converting {token?.Type.ToString() ?? "null"}");
+
             if (token == null) return CBORObject.Null;
 
             if (Config.CborPreserveTags && token is JObject jobj)
@@ -325,6 +396,7 @@ namespace FormatConverter.Cbor
                     jobj.TryGetValue("__cbor_value__", out var valueToken))
                 {
                     var tag = tagToken.Value<int>();
+                    Logger.WriteDebug($"ConvertJTokenToCbor: Preserving CBOR tag {tag}");
                     var innerValue = ConvertJTokenToCbor(valueToken);
                     return CBORObject.FromObjectAndTag(innerValue, tag);
                 }
@@ -336,7 +408,7 @@ namespace FormatConverter.Cbor
                 JTokenType.Array => ConvertJArrayToCborArray((JArray)token),
                 JTokenType.String => ConvertStringToCbor(token.Value<string>()),
                 JTokenType.Integer => ProcessIntegerValue(token.Value<long>()),
-                JTokenType.Float => CBORObject.FromObject(FormatNumberValue(token.Value<double>())),
+                JTokenType.Float => CBORObject.FromObject(token.Value<double>()),
                 JTokenType.Boolean => CBORObject.FromObject(token.Value<bool>()),
                 JTokenType.Date => ConvertDateToCbor(token.Value<DateTime>()),
                 JTokenType.Null => CBORObject.Null,
@@ -355,13 +427,11 @@ namespace FormatConverter.Cbor
 
         private CBORObject ConvertJObjectToCborMap(JObject jObject)
         {
+            Logger.WriteTrace($"ConvertJObjectToCborMap: Converting object with {jObject.Count} properties");
+
             var cborMap = CBORObject.NewMap();
 
-            var properties = Config.SortKeys
-                ? jObject.Properties().OrderBy(p => p.Name)
-                : jObject.Properties();
-
-            foreach (var property in properties)
+            foreach (var property in jObject.Properties())
             {
                 var key = CBORObject.FromObject(property.Name);
                 var value = ConvertJTokenToCbor(property.Value);
@@ -373,6 +443,8 @@ namespace FormatConverter.Cbor
 
         private CBORObject ConvertJArrayToCborArray(JArray jArray)
         {
+            Logger.WriteTrace($"ConvertJArrayToCborArray: Converting array with {jArray.Count} items");
+
             var cborArray = CBORObject.NewArray();
 
             foreach (var item in jArray)
@@ -407,28 +479,18 @@ namespace FormatConverter.Cbor
                     && Config.DateFormat.Equals("unix", StringComparison.CurrentCultureIgnoreCase))
                 {
                     var unixTime = ((DateTimeOffset)dateTime).ToUnixTimeSeconds();
+                    Logger.WriteDebug($"ConvertDateToCbor: Using Unix timestamp with tag 1: {unixTime}");
                     return CBORObject.FromObjectAndTag(unixTime, 1);
                 }
                 else
                 {
                     var isoString = dateTime.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+                    Logger.WriteDebug($"ConvertDateToCbor: Using ISO string with tag 0: {isoString}");
                     return CBORObject.FromObjectAndTag(isoString, 0);
                 }
             }
 
-            if (!string.IsNullOrEmpty(Config.DateFormat))
-            {
-                object formattedDate = Config.DateFormat!.ToLower() switch
-                {
-                    "iso8601" => dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                    "unix" => ((DateTimeOffset)dateTime).ToUnixTimeSeconds(),
-                    "rfc3339" => dateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz"),
-                    "timestamp" => ((DateTimeOffset)dateTime).ToUnixTimeMilliseconds(),
-                    _ => dateTime.ToString(Config.DateFormat)
-                };
-                return CBORObject.FromObject(formattedDate);
-            }
-
+            Logger.WriteTrace("ConvertDateToCbor: Converting date without tags");
             return CBORObject.FromObject(dateTime);
         }
 
@@ -448,6 +510,7 @@ namespace FormatConverter.Cbor
                 {
                     if (value >= 0)
                     {
+                        Logger.WriteDebug($"ProcessIntegerValue: Using BigNum tag 2 for positive value {value}");
                         var bytes = BitConverter.GetBytes(value);
                         if (BitConverter.IsLittleEndian)
                             Array.Reverse(bytes);
@@ -455,6 +518,7 @@ namespace FormatConverter.Cbor
                     }
                     else
                     {
+                        Logger.WriteDebug($"ProcessIntegerValue: Using BigNum tag 3 for negative value {value}");
                         var absValue = Math.Abs(value) - 1;
                         var bytes = BitConverter.GetBytes(absValue);
                         if (BitConverter.IsLittleEndian)
@@ -464,52 +528,38 @@ namespace FormatConverter.Cbor
                 }
             }
 
-            // Formato normal
-            if (!string.IsNullOrEmpty(Config.NumberFormat))
-            {
-                return Config.NumberFormat.ToLower() switch
-                {
-                    "hexadecimal" => CBORObject.FromObject(value),
-                    _ => CBORObject.FromObject(value)
-                };
-            }
-
             if (value >= int.MinValue && value <= int.MaxValue)
                 return CBORObject.FromObject((int)value);
 
             return CBORObject.FromObject(value);
         }
 
-        private double FormatNumberValue(double number)
-        {
-            if (!string.IsNullOrEmpty(Config.NumberFormat))
-            {
-                return Config.NumberFormat.ToLower() switch
-                {
-                    "scientific" => double.Parse(number.ToString("E")),
-                    "hexadecimal" => (long)number,
-                    _ => number
-                };
-            }
-            return number;
-        }
-
         private CBOREncodeOptions GetCborEncodeOptions()
         {
+            Logger.WriteTrace("GetCborEncodeOptions: Creating CBOR encode options");
+
             var opts = new List<string>();
 
             if (Config.CborCanonical)
             {
+                Logger.WriteDebug("GetCborEncodeOptions: Enabling canonical encoding");
                 opts.Add("ctap2canonical=true");
             }
             else if (Config.Minify)
             {
+                Logger.WriteDebug("GetCborEncodeOptions: Enabling canonical encoding for minify");
                 opts.Add("ctap2canonical=true");
             }
 
             if (Config.NoMetadata)
             {
+                Logger.WriteDebug("GetCborEncodeOptions: Disabling duplicate keys");
                 opts.Add("allowduplicatekeys=false");
+            }
+
+            if (opts.Count > 0)
+            {
+                Logger.WriteDebug($"GetCborEncodeOptions: Created options: {string.Join(", ", opts)}");
             }
 
             return opts.Count > 0
@@ -519,7 +569,10 @@ namespace FormatConverter.Cbor
 
         private string FormatOutput(byte[] bytes)
         {
-            return Config.NumberFormat?.ToLower() switch
+            var format = Config.NumberFormat?.ToLower();
+            Logger.WriteTrace($"FormatOutput: Formatting {bytes.Length} bytes as '{format ?? "base64"}'");
+
+            return format switch
             {
                 "hex" or "hexadecimal" => FormatAsHex(bytes),
                 "binary" => FormatAsBinary(bytes),
@@ -530,10 +583,13 @@ namespace FormatConverter.Cbor
 
         private string FormatAsHex(byte[] bytes)
         {
+            Logger.WriteTrace($"FormatAsHex: Formatting {bytes.Length} bytes as hexadecimal");
+
             const int stackAllocThreshold = 256;
 
             if (bytes.Length <= stackAllocThreshold)
             {
+                Logger.WriteTrace("FormatAsHex: Using stack allocation");
                 Span<char> hexChars = stackalloc char[bytes.Length * 2];
                 for (int i = 0; i < bytes.Length; i++)
                 {
@@ -549,6 +605,7 @@ namespace FormatConverter.Cbor
             }
             else
             {
+                Logger.WriteTrace("FormatAsHex: Using heap allocation");
                 var hex = Convert.ToHexString(bytes);
 
                 if (Config.PrettyPrint && !Config.Minify)
@@ -595,6 +652,8 @@ namespace FormatConverter.Cbor
 
         private string FormatAsBinary(byte[] bytes)
         {
+            Logger.WriteTrace($"FormatAsBinary: Formatting {bytes.Length} bytes as binary");
+
             const int bitsPerByte = 8;
             int totalChars = bytes.Length * bitsPerByte;
 
@@ -603,6 +662,7 @@ namespace FormatConverter.Cbor
             {
                 if (Config.PrettyPrint && !Config.Minify)
                 {
+                    Logger.WriteTrace("FormatAsBinary: Using pretty print format");
                     int sizeNeeded = totalChars + bytes.Length - 1;
                     buffer = ArrayPool<char>.Shared.Rent(sizeNeeded);
                     Span<char> span = buffer.AsSpan(0, sizeNeeded);
@@ -626,6 +686,7 @@ namespace FormatConverter.Cbor
                 }
                 else
                 {
+                    Logger.WriteTrace("FormatAsBinary: Using compact format");
                     buffer = ArrayPool<char>.Shared.Rent(totalChars);
                     Span<char> span = buffer.AsSpan(0, totalChars);
 
@@ -647,12 +708,15 @@ namespace FormatConverter.Cbor
                 if (buffer != null)
                 {
                     ArrayPool<char>.Shared.Return(buffer);
+                    Logger.WriteTrace("FormatAsBinary: Buffer returned to pool");
                 }
             }
         }
 
         private byte[] CreateErrorOutputBytes(string errorMessage, string errorType, JToken originalToken, CBOREncodeOptions options)
         {
+            Logger.WriteTrace("CreateErrorOutputBytes: Creating error output");
+
             try
             {
                 var errorMap = CBORObject.NewMap();
@@ -680,6 +744,8 @@ namespace FormatConverter.Cbor
 
         private string CreateErrorOutput(string errorMessage, string errorType, JToken originalToken)
         {
+            Logger.WriteTrace("CreateErrorOutput: Creating error output");
+
             var errorObj = new JObject
             {
                 ["error"] = errorMessage,

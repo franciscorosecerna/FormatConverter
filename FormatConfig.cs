@@ -1,11 +1,13 @@
 ﻿using FormatConverter.Bxml.BxmlWriter;
-using Google.Protobuf.WellKnownTypes;
+using FormatConverter.Logger;
 using System.Text;
 
 namespace FormatConverter
 {
     public class FormatConfig
     {
+        private static readonly ConsoleLogger _logger = new();
+
         //general
         public int? IndentSize { get; set; }
         public bool Minify { get; set; }
@@ -13,6 +15,7 @@ namespace FormatConverter
         public bool NoMetadata { get; set; }
         public bool SortKeys { get; set; }
         public Encoding Encoding { get; set; } = Encoding.UTF8;
+        public VerbosityLevel Verbosity { get; set; } = VerbosityLevel.None;
 
         //json specific
         public bool JsonEscapeUnicode { get; set; }
@@ -46,7 +49,6 @@ namespace FormatConverter
 
         //messagePack specific
         public bool MessagePackUseContractless { get; set; } = true;
-        public bool MessagePackLz4Compression { get; set; }
         public bool MessagePackOldSpec { get; set; }
 
         //cbor specific
@@ -63,7 +65,6 @@ namespace FormatConverter
 
         //other
         public string? Compression { get; set; }
-        public string? SchemaFile { get; set; }
         public bool StrictMode { get; set; }
         public bool IgnoreErrors { get; set; }
         public bool UseStreaming { get; set; }
@@ -84,6 +85,7 @@ namespace FormatConverter
                 PrettyPrint = options.PrettyPrint && !options.Minify,
                 NoMetadata = options.NoMetadata,
                 SortKeys = options.SortKeys,
+                Verbosity = options.Verbosity,
 
                 //JSON
                 JsonEscapeUnicode = options.JsonEscapeUnicode,
@@ -117,7 +119,6 @@ namespace FormatConverter
 
                 //MessagePack
                 MessagePackUseContractless = options.MessagePackUseContractless,
-                MessagePackLz4Compression = options.MessagePackLz4Compression,
                 MessagePackOldSpec = options.MessagePackOldSpec,
 
                 //CBOR
@@ -138,7 +139,6 @@ namespace FormatConverter
 
                 //Other
                 Compression = options.Compression,
-                SchemaFile = options.SchemaFile,
                 StrictMode = options.StrictMode,
                 IgnoreErrors = options.IgnoreErrors,
                 UseStreaming = options.UseStreaming,
@@ -157,7 +157,7 @@ namespace FormatConverter
             }
             catch (ArgumentException)
             {
-                Console.WriteLine($"Warning: Unknown encoding '{options.Encoding}', using UTF-8");
+                _logger.WriteWarning($"Unknown encoding '{options.Encoding}', using UTF-8");
                 config.Encoding = Encoding.UTF8;
             }
 
@@ -171,21 +171,21 @@ namespace FormatConverter
             //1. Minify takes precedence over PrettyPrint
             if (Minify && PrettyPrint)
             {
-                Console.Error.WriteLine("Warning: Both --minify and --pretty specified. Minify takes precedence.");
+                _logger.WriteWarning("Both --minify and --pretty specified. Minify takes precedence.");
                 PrettyPrint = false;
             }
 
             //2. Minify makes IndentSize irrelevant
             if (Minify && IndentSize.HasValue)
             {
-                Console.Error.WriteLine("Warning: Indent size ignored when minifying.");
+                _logger.WriteWarning("Warning: Indent size ignored when minifying.");
                 IndentSize = null;
             }
 
             //3. StrictMode takes precedence over IgnoreErrors
             if (StrictMode && IgnoreErrors)
             {
-                Console.Error.WriteLine("Warning: Both --strict and --ignore-errors specified. Strict mode takes precedence.");
+                _logger.WriteWarning("Warning: Both --strict and --ignore-errors specified. Strict mode takes precedence.");
                 IgnoreErrors = false;
             }
 
@@ -194,19 +194,19 @@ namespace FormatConverter
             {
                 if (JsonAllowTrailingCommas)
                 {
-                    Console.Error.WriteLine("Warning: Trailing commas disabled in strict mode (invalid JSON).");
+                    _logger.WriteWarning("Warning: Trailing commas disabled in strict mode (invalid JSON).");
                     JsonAllowTrailingCommas = false;
                 }
 
                 if (!JsonStrictPropertyNames)
                 {
-                    Console.Error.WriteLine("Warning: Unquoted property names disabled in strict mode (invalid JSON).");
+                    _logger.WriteWarning("Warning: Unquoted property names disabled in strict mode (invalid JSON).");
                     JsonStrictPropertyNames = true;
                 }
 
                 if (JsonAllowSingleQuotes)
                 {
-                    Console.Error.WriteLine("Warning: Single quotes disabled in strict mode (invalid JSON).");
+                    _logger.WriteWarning("Warning: Single quotes disabled in strict mode (invalid JSON).");
                     JsonAllowSingleQuotes = false;
                 }
             }
@@ -214,63 +214,63 @@ namespace FormatConverter
             //5. YAML Canonical takes precedence over flow style
             if (YamlCanonical && YamlFlowStyle)
             {
-                Console.Error.WriteLine("Warning: Flow style disabled in canonical YAML mode.");
+                _logger.WriteWarning("Warning: Flow style disabled in canonical YAML mode.");
                 YamlFlowStyle = false;
             }
 
             //6. YAML Canonical requires pretty print
             if (YamlCanonical && !PrettyPrint)
             {
-                Console.Error.WriteLine("Warning: Pretty print enabled for canonical YAML.");
+                _logger.WriteWarning("Warning: Pretty print enabled for canonical YAML.");
                 PrettyPrint = true;
             }
 
             //7. CBOR Canonical disables indefinite length
             if (CborCanonical && CborAllowIndefiniteLength)
             {
-                Console.Error.WriteLine("Warning: Indefinite length disabled in canonical CBOR mode.");
+                _logger.WriteWarning("Warning: Indefinite length disabled in canonical CBOR mode.");
                 CborAllowIndefiniteLength = false;
             }
 
             //8. ArrayWrap and FlattenArrays are mutually exclusive
             if (ArrayWrap && FlattenArrays)
             {
-                Console.Error.WriteLine("Warning: Both --array-wrap and --flatten-arrays specified. Array wrap takes precedence.");
+                _logger.WriteWarning("Warning: Both --array-wrap and --flatten-arrays specified. Array wrap takes precedence.");
                 FlattenArrays = false;
             }
 
             //9. MessagePack old spec doesn't support LZ4
-            if (MessagePackOldSpec && MessagePackLz4Compression)
+            if (MessagePackOldSpec && Compression?.ToLowerInvariant() == "lz4")
             {
-                Console.Error.WriteLine("Warning: LZ4 compression not supported in old MessagePack spec. Compression disabled.");
-                MessagePackLz4Compression = false;
+                _logger.WriteWarning("Warning: LZ4 compression not supported in old MessagePack spec. Compression disabled.");
+                Compression = null;
             }
 
             //10. XML namespace prefix requires namespace
             if (!string.IsNullOrEmpty(XmlNamespacePrefix) && string.IsNullOrEmpty(XmlNamespace))
             {
-                Console.Error.WriteLine("Warning: Namespace prefix specified without namespace. Prefix ignored.");
+                _logger.WriteWarning("Warning: Namespace prefix specified without namespace. Prefix ignored.");
                 XmlNamespacePrefix = null;
             }
 
             //11. Streaming requires valid chunk size
             if (UseStreaming && ChunkSize <= 0)
             {
-                Console.Error.WriteLine("Warning: Invalid chunk size for streaming. Using default (100).");
+                _logger.WriteWarning("Warning: Invalid chunk size for streaming. Using default (100).");
                 ChunkSize = 100;
             }
 
             //12. Minify disables TOML multiline strings
             if (Minify && TomlMultilineStrings)
             {
-                Console.Error.WriteLine("Warning: Multiline strings disabled when minifying TOML.");
+                _logger.WriteWarning("Warning: Multiline strings disabled when minifying TOML.");
                 TomlMultilineStrings = false;
             }
 
             //13. Invalid MaxDepth
             if (MaxDepth.HasValue && MaxDepth <= 0)
             {
-                Console.Error.WriteLine("Warning: Invalid max depth. Unlimited depth will be used.");
+                _logger.WriteWarning("Warning: Invalid max depth. Unlimited depth will be used.");
                 MaxDepth = null;
             }
         }
@@ -295,7 +295,7 @@ namespace FormatConverter
             }
             catch
             {
-                Console.WriteLine($"Warning: Unknown timezone '{Timezone}', using UTC");
+                _logger.WriteWarning($"Unknown timezone '{Timezone}', using UTC");
                 return TimeZoneInfo.Utc;
             }
         }
@@ -376,10 +376,9 @@ namespace FormatConverter
             }
 
             //MessagePack options
-            if (MessagePackLz4Compression || MessagePackOldSpec || MessagePackUseContractless)
+            if (MessagePackOldSpec || MessagePackUseContractless)
             {
                 sb.AppendLine("  MessagePack Options:");
-                if (MessagePackLz4Compression) sb.AppendLine("    - LZ4 compression");
                 if (MessagePackOldSpec) sb.AppendLine("    - OldSpec");
                 if (MessagePackUseContractless) sb.AppendLine("    - ContractLess");
             }
