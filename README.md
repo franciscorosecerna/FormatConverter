@@ -41,7 +41,7 @@ If you omit `-o <output-file>`, the tool auto-generates one with the correct ext
 
 - `--o, --output` → specify output file path
 - `--f, --force` → overwrite existing files
-- `--v, --verbose` → enable detailed logs
+- `--v, --verbosity <None/Error/Warning/Info/Debug/Trace>` → enable detailed logs
 - `--version` → show tool version
 - `--l, --list-formats` → list all supported formats
 - `--encoding <enc>` → set input/output encoding (default: utf-8)
