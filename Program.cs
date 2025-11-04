@@ -9,7 +9,7 @@ namespace FormatConverter
 {
     class Program
     {
-        public const string VERSION = "2.0.2";
+        public const string VERSION = "2.1.0";
         public static readonly string[] BinaryFormats = ["messagepack", "cbor", "protobuf", "bxml"];
         internal static readonly string[] sourceArray = ["gzip", "deflate", "brotli", "lz4"];
 
