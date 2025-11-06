@@ -47,7 +47,7 @@ namespace FormatConverter.Yaml.YamlParser
                         if (_ignoreErrors)
                         {
                             _logger.WriteWarning(
-                                $"Warning: Maximum depth {_maxDepth} exceeded at line {current.Start.Line}, " +
+                                () => $"Warning: Maximum depth {_maxDepth} exceeded at line {current.Start.Line}, " +
                                 $"column {current.Start.Column}. Skipping nested content."
                             );
 

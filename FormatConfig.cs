@@ -157,7 +157,7 @@ namespace FormatConverter
             }
             catch (ArgumentException)
             {
-                _logger.WriteWarning($"Unknown encoding '{options.Encoding}', using UTF-8");
+                _logger.WriteWarning(() => $"Unknown encoding '{options.Encoding}', using UTF-8");
                 config.Encoding = Encoding.UTF8;
             }
 
@@ -171,21 +171,21 @@ namespace FormatConverter
             //1. Minify takes precedence over PrettyPrint
             if (Minify && PrettyPrint)
             {
-                _logger.WriteWarning("Both --minify and --pretty specified. Minify takes precedence.");
+                _logger.WriteWarning(() => "Both --minify and --pretty specified. Minify takes precedence.");
                 PrettyPrint = false;
             }
 
             //2. Minify makes IndentSize irrelevant
             if (Minify && IndentSize.HasValue)
             {
-                _logger.WriteWarning("Warning: Indent size ignored when minifying.");
+                _logger.WriteWarning(() => "Warning: Indent size ignored when minifying.");
                 IndentSize = null;
             }
 
             //3. StrictMode takes precedence over IgnoreErrors
             if (StrictMode && IgnoreErrors)
             {
-                _logger.WriteWarning("Warning: Both --strict and --ignore-errors specified. Strict mode takes precedence.");
+                _logger.WriteWarning(() => "Warning: Both --strict and --ignore-errors specified. Strict mode takes precedence.");
                 IgnoreErrors = false;
             }
 
@@ -194,19 +194,19 @@ namespace FormatConverter
             {
                 if (JsonAllowTrailingCommas)
                 {
-                    _logger.WriteWarning("Warning: Trailing commas disabled in strict mode (invalid JSON).");
+                    _logger.WriteWarning(() => "Warning: Trailing commas disabled in strict mode (invalid JSON).");
                     JsonAllowTrailingCommas = false;
                 }
 
                 if (!JsonStrictPropertyNames)
                 {
-                    _logger.WriteWarning("Warning: Unquoted property names disabled in strict mode (invalid JSON).");
+                    _logger.WriteWarning(() => "Warning: Unquoted property names disabled in strict mode (invalid JSON).");
                     JsonStrictPropertyNames = true;
                 }
 
                 if (JsonAllowSingleQuotes)
                 {
-                    _logger.WriteWarning("Warning: Single quotes disabled in strict mode (invalid JSON).");
+                    _logger.WriteWarning(() => "Warning: Single quotes disabled in strict mode (invalid JSON).");
                     JsonAllowSingleQuotes = false;
                 }
             }
@@ -214,63 +214,63 @@ namespace FormatConverter
             //5. YAML Canonical takes precedence over flow style
             if (YamlCanonical && YamlFlowStyle)
             {
-                _logger.WriteWarning("Warning: Flow style disabled in canonical YAML mode.");
+                _logger.WriteWarning(() => "Warning: Flow style disabled in canonical YAML mode.");
                 YamlFlowStyle = false;
             }
 
             //6. YAML Canonical requires pretty print
             if (YamlCanonical && !PrettyPrint)
             {
-                _logger.WriteWarning("Warning: Pretty print enabled for canonical YAML.");
+                _logger.WriteWarning(() => "Warning: Pretty print enabled for canonical YAML.");
                 PrettyPrint = true;
             }
 
             //7. CBOR Canonical disables indefinite length
             if (CborCanonical && CborAllowIndefiniteLength)
             {
-                _logger.WriteWarning("Warning: Indefinite length disabled in canonical CBOR mode.");
+                _logger.WriteWarning(() => "Warning: Indefinite length disabled in canonical CBOR mode.");
                 CborAllowIndefiniteLength = false;
             }
 
             //8. ArrayWrap and FlattenArrays are mutually exclusive
             if (ArrayWrap && FlattenArrays)
             {
-                _logger.WriteWarning("Warning: Both --array-wrap and --flatten-arrays specified. Array wrap takes precedence.");
+                _logger.WriteWarning(() => "Warning: Both --array-wrap and --flatten-arrays specified. Array wrap takes precedence.");
                 FlattenArrays = false;
             }
 
             //9. MessagePack old spec doesn't support LZ4
             if (MessagePackOldSpec && Compression?.ToLowerInvariant() == "lz4")
             {
-                _logger.WriteWarning("Warning: LZ4 compression not supported in old MessagePack spec. Compression disabled.");
+                _logger.WriteWarning(() => "Warning: LZ4 compression not supported in old MessagePack spec. Compression disabled.");
                 Compression = null;
             }
 
             //10. XML namespace prefix requires namespace
             if (!string.IsNullOrEmpty(XmlNamespacePrefix) && string.IsNullOrEmpty(XmlNamespace))
             {
-                _logger.WriteWarning("Warning: Namespace prefix specified without namespace. Prefix ignored.");
+                _logger.WriteWarning(() => "Warning: Namespace prefix specified without namespace. Prefix ignored.");
                 XmlNamespacePrefix = null;
             }
 
             //11. Streaming requires valid chunk size
             if (UseStreaming && ChunkSize <= 0)
             {
-                _logger.WriteWarning("Warning: Invalid chunk size for streaming. Using default (100).");
+                _logger.WriteWarning(() => "Warning: Invalid chunk size for streaming. Using default (100).");
                 ChunkSize = 100;
             }
 
             //12. Minify disables TOML multiline strings
             if (Minify && TomlMultilineStrings)
             {
-                _logger.WriteWarning("Warning: Multiline strings disabled when minifying TOML.");
+                _logger.WriteWarning(() => "Warning: Multiline strings disabled when minifying TOML.");
                 TomlMultilineStrings = false;
             }
 
             //13. Invalid MaxDepth
             if (MaxDepth.HasValue && MaxDepth <= 0)
             {
-                _logger.WriteWarning("Warning: Invalid max depth. Unlimited depth will be used.");
+                _logger.WriteWarning(() => "Warning: Invalid max depth. Unlimited depth will be used.");
                 MaxDepth = null;
             }
         }
@@ -295,7 +295,7 @@ namespace FormatConverter
             }
             catch
             {
-                _logger.WriteWarning($"Unknown timezone '{Timezone}', using UTC");
+                _logger.WriteWarning(() => $"Unknown timezone '{Timezone}', using UTC");
                 return TimeZoneInfo.Utc;
             }
         }

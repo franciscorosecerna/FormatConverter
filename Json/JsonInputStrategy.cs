@@ -10,17 +10,17 @@ namespace FormatConverter.Json
     {
         public override JToken Parse(string json)
         {
-            Logger.WriteTrace("Parse: Starting JSON parsing");
+            Logger.WriteTrace(() => "Parse: Starting JSON parsing");
 
             if (string.IsNullOrWhiteSpace(json))
             {
-                Logger.WriteWarning("Parse: Input is null or empty");
+                Logger.WriteWarning(() => "Parse: Input is null or empty");
                 return Config.IgnoreErrors
                     ? new JObject()
                     : throw new ArgumentException("JSON input cannot be null or empty", nameof(json));
             }
 
-            Logger.WriteDebug($"Parse: Input length: {json.Length} characters");
+            Logger.WriteDebug(() => $"Parse: Input length: {json.Length} characters");
             json = PreprocessJson(json);
 
             var settings = CreateJsonLoadSettings();
@@ -34,7 +34,7 @@ namespace FormatConverter.Json
                     DateParseHandling = DateParseHandling.None
                 };
 
-                Logger.WriteTrace("Parse: Reading JSON token");
+                Logger.WriteTrace(() => "Parse: Reading JSON token");
                 var token = JToken.ReadFrom(jsonReader, settings);
 
                 Logger.WriteSuccess($"Parse: JSON parsed successfully as {token.Type}");
@@ -42,34 +42,34 @@ namespace FormatConverter.Json
             }
             catch (JsonReaderException ex)
             {
-                Logger.WriteError($"Parse: JsonReaderException at line {ex.LineNumber}, position {ex.LinePosition} - {ex.Message}");
+                Logger.WriteError(() => $"Parse: JsonReaderException at line {ex.LineNumber}, position {ex.LinePosition} - {ex.Message}");
                 return HandleParsingError(ex, json);
             }
         }
 
         public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken = default)
         {
-            Logger.WriteInfo($"ParseStream: Starting stream parsing for '{path}'");
+            Logger.WriteInfo(() => $"ParseStream: Starting stream parsing for '{path}'");
 
             if (string.IsNullOrWhiteSpace(path))
             {
-                Logger.WriteError("ParseStream: Path is null or empty");
+                Logger.WriteError(() => "ParseStream: Path is null or empty");
                 throw new ArgumentException("Path cannot be null or empty.", nameof(path));
             }
 
             if (!File.Exists(path))
             {
-                Logger.WriteError($"ParseStream: File not found at '{path}'");
+                Logger.WriteError(() => $"ParseStream: File not found at '{path}'");
                 throw new FileNotFoundException("Input file not found.", path);
             }
 
-            Logger.WriteDebug($"ParseStream: File found, size: {new FileInfo(path).Length} bytes");
+            Logger.WriteDebug(() => $"ParseStream: File found, size: {new FileInfo(path).Length} bytes");
             return ParseStreamInternal(path, cancellationToken);
         }
 
         private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
         {
-            Logger.WriteTrace("ParseStreamInternal: Opening file stream");
+            Logger.WriteTrace(() => "ParseStreamInternal: Opening file stream");
 
             using var fileStream = File.OpenRead(path);
             using var streamReader = new StreamReader(fileStream, Config.Encoding, detectEncodingFromByteOrderMarks: true);
@@ -80,8 +80,8 @@ namespace FormatConverter.Json
             var tokensProcessed = 0;
             var settings = CreateJsonLoadSettings();
 
-            Logger.WriteDebug($"ParseStreamInternal: File size: {fileSize:N0} bytes, progress logging: {showProgress}");
-            Logger.WriteTrace("ParseStreamInternal: Starting token iteration");
+            Logger.WriteDebug(() => $"ParseStreamInternal: File size: {fileSize:N0} bytes, progress logging: {showProgress}");
+            Logger.WriteTrace(() => "ParseStreamInternal: Starting token iteration");
 
             while (jsonReader.Read())
             {
@@ -90,7 +90,7 @@ namespace FormatConverter.Json
                 if (jsonReader.TokenType == JsonToken.StartObject ||
                     jsonReader.TokenType == JsonToken.StartArray)
                 {
-                    Logger.WriteTrace($"ParseStreamInternal: Found {jsonReader.TokenType} at line {jsonReader.LineNumber}");
+                    Logger.WriteTrace(() => $"ParseStreamInternal: Found {jsonReader.TokenType} at line {jsonReader.LineNumber}");
                     var token = ReadToken(jsonReader, settings, path);
 
                     if (token != null)
@@ -100,10 +100,10 @@ namespace FormatConverter.Json
                         if (showProgress && tokensProcessed % 100 == 0)
                         {
                             var progress = (double)fileStream.Position / fileSize * 100;
-                            Logger.WriteInfo($"Processing: {progress:F1}% ({tokensProcessed} elements)");
+                            Logger.WriteInfo(() => $"Processing: {progress:F1}% ({tokensProcessed} elements)");
                         }
 
-                        Logger.WriteTrace($"ParseStreamInternal: Token {tokensProcessed} parsed as {token.Type}");
+                        Logger.WriteTrace(() => $"ParseStreamInternal: Token {tokensProcessed} parsed as {token.Type}");
                         yield return token;
                     }
                 }
@@ -111,7 +111,7 @@ namespace FormatConverter.Json
 
             if (showProgress)
             {
-                Logger.WriteInfo($"Completed: {tokensProcessed} objects processed");
+                Logger.WriteInfo(() => $"Completed: {tokensProcessed} objects processed");
             }
 
             Logger.WriteSuccess($"ParseStreamInternal: Stream parsing completed. Total tokens: {tokensProcessed}");
@@ -119,24 +119,24 @@ namespace FormatConverter.Json
 
         private JToken? ReadToken(JsonTextReader jsonReader, JsonLoadSettings settings, string path)
         {
-            Logger.WriteTrace($"ReadToken: Reading token at line {jsonReader.LineNumber}, position {jsonReader.LinePosition}");
+            Logger.WriteTrace(() => $"ReadToken: Reading token at line {jsonReader.LineNumber}, position {jsonReader.LinePosition}");
 
             try
             {
                 var token = JToken.ReadFrom(jsonReader, settings);
-                Logger.WriteTrace($"ReadToken: Successfully read {token.Type}");
+                Logger.WriteTrace(() => $"ReadToken: Successfully read {token.Type}");
                 return token;
             }
             catch (JsonReaderException ex)
             {
                 if (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning($"JSON streaming error at line {jsonReader.LineNumber}, " +
+                    Logger.WriteWarning(() => $"JSON streaming error at line {jsonReader.LineNumber}, " +
                                       $"position {jsonReader.LinePosition}: {ex.Message}");
                     return CreateErrorToken(ex, jsonReader);
                 }
 
-                Logger.WriteError($"ReadToken: Fatal error at line {jsonReader.LineNumber}, position {jsonReader.LinePosition}");
+                Logger.WriteError(() => $"ReadToken: Fatal error at line {jsonReader.LineNumber}, position {jsonReader.LinePosition}");
                 throw new FormatException(
                     $"Invalid JSON at line {jsonReader.LineNumber}, position {jsonReader.LinePosition}: {ex.Message}",
                     ex);
@@ -145,8 +145,8 @@ namespace FormatConverter.Json
 
         private JsonTextReader CreateJsonTextReader(StreamReader streamReader)
         {
-            Logger.WriteTrace("CreateJsonTextReader: Creating JsonTextReader with multiple content support");
-            Logger.WriteDebug($"CreateJsonTextReader: MaxDepth={Config.MaxDepth?.ToString() ?? "unlimited"}");
+            Logger.WriteTrace(() => "CreateJsonTextReader: Creating JsonTextReader with multiple content support");
+            Logger.WriteDebug(() => $"CreateJsonTextReader: MaxDepth={Config.MaxDepth?.ToString() ?? "unlimited"}");
 
             return new JsonTextReader(streamReader)
             {
@@ -158,7 +158,7 @@ namespace FormatConverter.Json
 
         private JsonLoadSettings CreateJsonLoadSettings()
         {
-            Logger.WriteTrace("CreateJsonLoadSettings: Creating JSON load settings");
+            Logger.WriteTrace(() => "CreateJsonLoadSettings: Creating JSON load settings");
 
             var commentHandling = Config.NoMetadata ? CommentHandling.Ignore : CommentHandling.Load;
             var duplicateHandling = Config.StrictMode
@@ -166,7 +166,7 @@ namespace FormatConverter.Json
                 : DuplicatePropertyNameHandling.Replace;
             var lineInfoHandling = Config.StrictMode ? LineInfoHandling.Load : LineInfoHandling.Ignore;
 
-            Logger.WriteDebug($"CreateJsonLoadSettings: CommentHandling={commentHandling}, " +
+            Logger.WriteDebug(() => $"CreateJsonLoadSettings: CommentHandling={commentHandling}, " +
                             $"DuplicateHandling={duplicateHandling}, LineInfoHandling={lineInfoHandling}");
 
             return new JsonLoadSettings
@@ -179,37 +179,37 @@ namespace FormatConverter.Json
 
         private string PreprocessJson(string json)
         {
-            Logger.WriteTrace($"PreprocessJson: Starting preprocessing ({json.Length} characters)");
+            Logger.WriteTrace(() => $"PreprocessJson: Starting preprocessing ({json.Length} characters)");
             var modified = false;
 
             if (Config.JsonAllowSingleQuotes)
             {
-                Logger.WriteDebug("PreprocessJson: Converting single quotes to double quotes");
+                Logger.WriteDebug(() => "PreprocessJson: Converting single quotes to double quotes");
                 json = ConvertSingleQuotesToDouble(json);
                 modified = true;
             }
 
             if (Config.JsonAllowTrailingCommas)
             {
-                Logger.WriteDebug("PreprocessJson: Removing trailing commas");
+                Logger.WriteDebug(() => "PreprocessJson: Removing trailing commas");
                 json = RemoveTrailingCommas(json);
                 modified = true;
             }
 
             if (!Config.JsonStrictPropertyNames)
             {
-                Logger.WriteDebug("PreprocessJson: Adding quotes to property names");
+                Logger.WriteDebug(() => "PreprocessJson: Adding quotes to property names");
                 json = AddQuotesToPropertyNames(json);
                 modified = true;
             }
 
             if (modified)
             {
-                Logger.WriteTrace($"PreprocessJson: Preprocessing completed, new length: {json.Length} characters");
+                Logger.WriteTrace(() => $"PreprocessJson: Preprocessing completed, new length: {json.Length} characters");
             }
             else
             {
-                Logger.WriteTrace("PreprocessJson: No preprocessing needed");
+                Logger.WriteTrace(() => "PreprocessJson: No preprocessing needed");
             }
 
             return json;
@@ -271,11 +271,11 @@ namespace FormatConverter.Json
         {
             if (Config.IgnoreErrors)
             {
-                Logger.WriteWarning($"JSON parsing error: {ex.Message}");
+                Logger.WriteWarning(() => $"JSON parsing error: {ex.Message}");
                 return CreateErrorToken(ex, input);
             }
 
-            Logger.WriteError($"HandleParsingError: Fatal error - {ex.Message}");
+            Logger.WriteError(() => $"HandleParsingError: Fatal error - {ex.Message}");
             throw new FormatException($"Invalid JSON: {ex.Message}", ex);
         }
 

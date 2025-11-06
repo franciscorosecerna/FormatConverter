@@ -8,11 +8,11 @@ namespace FormatConverter.Json
     {
         public override string Serialize(JToken data)
         {
-            Logger.WriteTrace("Serialize: Starting JSON serialization");
+            Logger.WriteTrace(() => "Serialize: Starting JSON serialization");
 
             ArgumentNullException.ThrowIfNull(data);
 
-            Logger.WriteDebug($"Serialize: Input token type: {data.Type}");
+            Logger.WriteDebug(() => $"Serialize: Input token type: {data.Type}");
             var processed = PreprocessToken(data);
             var settings = CreateJsonSerializerSettings();
 
@@ -20,7 +20,7 @@ namespace FormatConverter.Json
 
             if (Config.StrictMode)
             {
-                Logger.WriteDebug("Serialize: Validating JSON in strict mode");
+                Logger.WriteDebug(() => "Serialize: Validating JSON in strict mode");
                 ValidateJson(result);
             }
 
@@ -30,7 +30,7 @@ namespace FormatConverter.Json
 
         public override void SerializeStream(IEnumerable<JToken> data, Stream output, CancellationToken cancellationToken = default)
         {
-            Logger.WriteInfo("SerializeStream: Starting stream serialization");
+            Logger.WriteInfo(() => "SerializeStream: Starting stream serialization");
 
             ArgumentNullException.ThrowIfNull(data);
             ArgumentNullException.ThrowIfNull(output);
@@ -39,7 +39,7 @@ namespace FormatConverter.Json
             var serializer = JsonSerializer.Create(settings);
             var chunkSize = GetChunkSize();
 
-            Logger.WriteDebug($"SerializeStream: Chunk size: {chunkSize}");
+            Logger.WriteDebug(() => $"SerializeStream: Chunk size: {chunkSize}");
 
             using var writer = new StreamWriter(output, Config.Encoding, 8192, leaveOpen: true);
             using var jsonWriter = new JsonTextWriter(writer);
@@ -49,7 +49,7 @@ namespace FormatConverter.Json
             var buffer = new List<JToken>();
             var totalProcessed = 0;
 
-            Logger.WriteTrace("SerializeStream: Writing array start");
+            Logger.WriteTrace(() => "SerializeStream: Writing array start");
             jsonWriter.WriteStartArray();
 
             foreach (var token in data)
@@ -61,7 +61,7 @@ namespace FormatConverter.Json
 
                 if (buffer.Count >= chunkSize)
                 {
-                    Logger.WriteTrace($"SerializeStream: Writing chunk of {buffer.Count} items");
+                    Logger.WriteTrace(() => $"SerializeStream: Writing chunk of {buffer.Count} items");
                     WriteChunkToStream(buffer, serializer, jsonWriter, cancellationToken);
                     totalProcessed += buffer.Count;
                     buffer.Clear();
@@ -71,12 +71,12 @@ namespace FormatConverter.Json
             if (buffer.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                Logger.WriteTrace($"SerializeStream: Writing final chunk of {buffer.Count} items");
+                Logger.WriteTrace(() => $"SerializeStream: Writing final chunk of {buffer.Count} items");
                 WriteChunkToStream(buffer, serializer, jsonWriter, cancellationToken);
                 totalProcessed += buffer.Count;
             }
 
-            Logger.WriteTrace("SerializeStream: Writing array end");
+            Logger.WriteTrace(() => "SerializeStream: Writing array end");
             jsonWriter.WriteEndArray();
             jsonWriter.Flush();
             writer.Flush();
@@ -86,11 +86,11 @@ namespace FormatConverter.Json
 
         public void SerializeStream(IEnumerable<JToken> data, string outputPath, CancellationToken cancellationToken = default)
         {
-            Logger.WriteInfo($"SerializeStream: Writing to file '{outputPath}'");
+            Logger.WriteInfo(() => $"SerializeStream: Writing to file '{outputPath}'");
 
             if (string.IsNullOrEmpty(outputPath))
             {
-                Logger.WriteError("SerializeStream: Output path is null or empty");
+                Logger.WriteError(() => "SerializeStream: Output path is null or empty");
                 throw new ArgumentNullException(nameof(outputPath));
             }
 
@@ -104,11 +104,11 @@ namespace FormatConverter.Json
         {
             if (items.Count == 0)
             {
-                Logger.WriteTrace("WriteChunkToStream: Empty chunk, skipping");
+                Logger.WriteTrace(() => "WriteChunkToStream: Empty chunk, skipping");
                 return;
             }
 
-            Logger.WriteTrace($"WriteChunkToStream: Processing {items.Count} items");
+            Logger.WriteTrace(() => $"WriteChunkToStream: Processing {items.Count} items");
 
             for (int i = 0; i < items.Count; i++)
             {
@@ -117,11 +117,11 @@ namespace FormatConverter.Json
                 try
                 {
                     serializer.Serialize(jsonWriter, items[i]);
-                    Logger.WriteTrace($"WriteChunkToStream: Item {i} serialized successfully");
+                    Logger.WriteTrace(() => $"WriteChunkToStream: Item {i} serialized successfully");
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning($"JSON serialization error in item {i}: {ex.Message}");
+                    Logger.WriteWarning(() => $"JSON serialization error in item {i}: {ex.Message}");
                     var errorObj = new JObject
                     {
                         ["error"] = ex.Message,
@@ -134,12 +134,12 @@ namespace FormatConverter.Json
             }
 
             jsonWriter.Flush();
-            Logger.WriteTrace("WriteChunkToStream: Chunk flushed");
+            Logger.WriteTrace(() => "WriteChunkToStream: Chunk flushed");
         }
 
         private string SerializeToken(JToken token, JsonSerializer serializer)
         {
-            Logger.WriteTrace($"SerializeToken: Serializing token type {token.Type}");
+            Logger.WriteTrace(() => $"SerializeToken: Serializing token type {token.Type}");
 
             using var sw = new StringWriter();
             using var writer = new JsonTextWriter(sw);
@@ -150,32 +150,32 @@ namespace FormatConverter.Json
             {
                 serializer.Serialize(writer, token);
                 var result = sw.ToString();
-                Logger.WriteDebug($"SerializeToken: Generated {result.Length} characters");
+                Logger.WriteDebug(() => $"SerializeToken: Generated {result.Length} characters");
                 return result;
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
-                Logger.WriteWarning($"JSON serialization error ignored: {ex.Message}");
+                Logger.WriteWarning(() => $"JSON serialization error ignored: {ex.Message}");
                 return CreateErrorJson(ex.Message, ex.GetType().Name, token);
             }
         }
 
         private void ValidateJson(string json)
         {
-            Logger.WriteTrace($"ValidateJson: Validating {json.Length} characters");
+            Logger.WriteTrace(() => $"ValidateJson: Validating {json.Length} characters");
 
             try
             {
                 JToken.Parse(json);
-                Logger.WriteDebug("ValidateJson: Validation successful");
+                Logger.WriteDebug(() => "ValidateJson: Validation successful");
             }
             catch (Exception ex) when (!Config.StrictMode)
             {
-                Logger.WriteWarning($"ValidateJson: Validation failed but ignored - {ex.Message}");
+                Logger.WriteWarning(() => $"ValidateJson: Validation failed but ignored - {ex.Message}");
             }
             catch (Exception ex)
             {
-                Logger.WriteError($"ValidateJson: Validation failed - {ex.Message}");
+                Logger.WriteError(() => $"ValidateJson: Validation failed - {ex.Message}");
                 throw;
             }
         }
@@ -186,7 +186,7 @@ namespace FormatConverter.Json
 
         private JsonSerializerSettings CreateJsonSerializerSettings()
         {
-            Logger.WriteTrace("CreateJsonSerializerSettings: Creating JSON serializer settings");
+            Logger.WriteTrace(() => "CreateJsonSerializerSettings: Creating JSON serializer settings");
 
             var formatting = Config.Minify ? Formatting.None :
                             Config.PrettyPrint ? Formatting.Indented : Formatting.None;
@@ -195,7 +195,7 @@ namespace FormatConverter.Json
                                StringEscapeHandling.EscapeNonAscii :
                                StringEscapeHandling.Default;
 
-            Logger.WriteDebug($"CreateJsonSerializerSettings: Formatting={formatting}, " +
+            Logger.WriteDebug(() => $"CreateJsonSerializerSettings: Formatting={formatting}, " +
                             $"EscapeHandling={escapeHandling}, StrictMode={Config.StrictMode}");
 
             var settings = new JsonSerializerSettings
@@ -206,17 +206,17 @@ namespace FormatConverter.Json
 
             if (Config.IgnoreErrors)
             {
-                Logger.WriteDebug("CreateJsonSerializerSettings: Error handling configured for IgnoreErrors mode");
+                Logger.WriteDebug(() => "CreateJsonSerializerSettings: Error handling configured for IgnoreErrors mode");
                 settings.Error = (s, e) =>
                 {
-                    Logger.WriteWarning($"JSON serialization error: {e.ErrorContext.Error.Message}");
+                    Logger.WriteWarning(() => $"JSON serialization error: {e.ErrorContext.Error.Message}");
                     e.ErrorContext.Handled = true;
                 };
             }
 
             if (Config.StrictMode)
             {
-                Logger.WriteDebug("CreateJsonSerializerSettings: MissingMemberHandling set to Error for strict mode");
+                Logger.WriteDebug(() => "CreateJsonSerializerSettings: MissingMemberHandling set to Error for strict mode");
                 settings.MissingMemberHandling = MissingMemberHandling.Error;
             }
 
@@ -231,33 +231,33 @@ namespace FormatConverter.Json
                 {
                     if (Config.IndentSize.Value == 0)
                     {
-                        Logger.WriteDebug("ConfigureJsonWriter: Using tab indentation");
+                        Logger.WriteDebug(() => "ConfigureJsonWriter: Using tab indentation");
                         writer.Indentation = 1;
                         writer.IndentChar = '\t';
                     }
                     else
                     {
-                        Logger.WriteDebug($"ConfigureJsonWriter: Using {Config.IndentSize.Value} space indentation");
+                        Logger.WriteDebug(() => $"ConfigureJsonWriter: Using {Config.IndentSize.Value} space indentation");
                         writer.Indentation = Config.IndentSize.Value;
                         writer.IndentChar = ' ';
                     }
                 }
                 else
                 {
-                    Logger.WriteDebug("ConfigureJsonWriter: Using default 2 space indentation");
+                    Logger.WriteDebug(() => "ConfigureJsonWriter: Using default 2 space indentation");
                     writer.Indentation = 2;
                     writer.IndentChar = ' ';
                 }
             }
             else
             {
-                Logger.WriteTrace("ConfigureJsonWriter: Pretty print disabled, using compact format");
+                Logger.WriteTrace(() => "ConfigureJsonWriter: Pretty print disabled, using compact format");
             }
         }
 
         private string CreateErrorJson(string errorMessage, string errorType, JToken originalToken)
         {
-            Logger.WriteTrace("CreateErrorJson: Creating error JSON");
+            Logger.WriteTrace(() => "CreateErrorJson: Creating error JSON");
 
             var errorObj = new JObject
             {

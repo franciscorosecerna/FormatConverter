@@ -51,24 +51,24 @@ namespace FormatConverter
                     return 0;
                 }
 
-                logger.WriteDebug($"Verbosity level: {logger.Verbosity}");
+                logger.WriteDebug(() => $"Verbosity level: {logger.Verbosity}");
 
                 ValidateOptions(opts, logger);
 
                 var formatConfig = FormatConfig.FromOptions(opts);
                 formatConfig.ValidateConfiguration();
 
-                logger.WriteInfo("Configuration:");
-                logger.WriteInfo(formatConfig.ToString());
+                logger.WriteInfo(() => "Configuration:");
+                logger.WriteInfo(() => formatConfig.ToString());
 
                 if (opts.UseStreaming)
                 {
-                    logger.WriteInfo("Streaming mode enabled.");
+                    logger.WriteInfo(() => "Streaming mode enabled.");
                     using var cts = new CancellationTokenSource();
 
                     Console.CancelKeyPress += (s, e) =>
                     {
-                        logger.WriteWarning("Cancellation requested (Ctrl+C)...");
+                        logger.WriteWarning(() => "Cancellation requested (Ctrl+C)...");
                         e.Cancel = true;
                         cts.Cancel();
                     };
@@ -80,15 +80,15 @@ namespace FormatConverter
             }
             catch (ArgumentException ex)
             {
-                logger.WriteError($"Configuration error: {ex.Message}");
-                logger.WriteDebug($"Stack trace: {ex.StackTrace}");
+                logger.WriteError(() => $"Configuration error: {ex.Message}");
+                logger.WriteDebug(() => $"Stack trace: {ex.StackTrace}");
                 return 3;
             }
             catch (Exception ex)
             {
-                logger.WriteError($"Unexpected error: {ex.Message}");
-                logger.WriteDebug($"Exception type: {ex.GetType().Name}");
-                logger.WriteDebug($"Stack trace: {ex.StackTrace}");
+                logger.WriteError(() => $"Unexpected error: {ex.Message}");
+                logger.WriteDebug(() => $"Exception type: {ex.GetType().Name}");
+                logger.WriteDebug(() => $"Stack trace: {ex.StackTrace}");
 #if DEBUG
                 Console.Error.WriteLine(ex);
 #endif
@@ -101,59 +101,59 @@ namespace FormatConverter
         {
             var supported = FormatStrategyFactory.GetSupportedFormats();
 
-            logger.WriteDebug($"Supported formats: {string.Join(", ", supported)}");
+            logger.WriteDebug(() => $"Supported formats: {string.Join(", ", supported)}");
 
             if (!supported.Contains(opts.InputFormat.ToLower()) ||
                 !supported.Contains(opts.OutputFormat.ToLower()))
             {
-                logger.WriteError($"Unsupported format. Supported: {string.Join(", ", supported)}");
+                logger.WriteError(() => $"Unsupported format. Supported: {string.Join(", ", supported)}");
                 return 3;
             }
 
             if (opts.InputFormat.Equals(opts.OutputFormat, StringComparison.OrdinalIgnoreCase) &&
                 !HasFormatSpecificOptions(opts))
             {
-                logger.WriteWarning("Input and output formats are the same and no format-specific options provided.");
+                logger.WriteWarning(() => "Input and output formats are the same and no format-specific options provided.");
                 return 0;
             }
 
             try
             {
-                logger.WriteDebug($"Reading input from: {opts.InputFile}");
+                logger.WriteDebug(() => $"Reading input from: {opts.InputFile}");
 
                 var inputText = ReadInput(opts.InputFile, opts.InputFormat, config, logger);
 
-                logger.WriteDebug($"Input text length: {inputText.Length} characters");
+                logger.WriteDebug(() => $"Input text length: {inputText.Length} characters");
 
                 var inputStrategy = FormatStrategyFactory.CreateInputStrategy(opts.InputFormat, config);
                 var outputStrategy = FormatStrategyFactory.CreateOutputStrategy(opts.OutputFormat, config);
 
-                logger.WriteInfo($"Parsing {opts.InputFormat}...");
+                logger.WriteInfo(() => $"Parsing {opts.InputFormat}...");
                 var parsedData = inputStrategy.Parse(inputText);
 
-                logger.WriteDebug($"Parsed data type: {parsedData?.Type}");
+                logger.WriteDebug(() => $"Parsed data type: {parsedData?.Type}");
 
-                logger.WriteInfo($"Serializing to {opts.OutputFormat}...");
+                logger.WriteInfo(() => $"Serializing to {opts.OutputFormat}...");
                 string result = outputStrategy.Serialize(parsedData!);
 
-                logger.WriteDebug($"Serialized output length: {result.Length} characters");
+                logger.WriteDebug(() => $"Serialized output length: {result.Length} characters");
 
                 if (!string.IsNullOrEmpty(config.Compression))
                 {
-                    logger.WriteInfo($"Applying {config.Compression} compression...");
+                    logger.WriteInfo(() => $"Applying {config.Compression} compression...");
                     var originalLength = result.Length;
                     result = CompressString(result, config, opts);
 
                     var compressionRatio = (1 - (double)result.Length / originalLength) * 100;
-                    logger.WriteDebug($"Compression ratio: {compressionRatio:F2}%");
+                    logger.WriteDebug(() => $"Compression ratio: {compressionRatio:F2}%");
                 }
 
                 return WriteResult(opts, config, result, logger);
             }
             catch (Exception ex)
             {
-                logger.WriteError($"Conversion error: {ex.Message}");
-                logger.WriteDebug($"Exception details: {ex}");
+                logger.WriteError(() => $"Conversion error: {ex.Message}");
+                logger.WriteDebug(() => $"Exception details: {ex}");
                 return 4;
             }
         }
@@ -167,7 +167,7 @@ namespace FormatConverter
             if (!supportedFormats.Contains(opts.InputFormat.ToLower()) ||
                 !supportedFormats.Contains(opts.OutputFormat.ToLower()))
             {
-                logger.WriteError($"Unsupported format. Supported formats: {string.Join(", ", supportedFormats)}");
+                logger.WriteError(() => $"Unsupported format. Supported formats: {string.Join(", ", supportedFormats)}");
                 return 3;
             }
 
@@ -178,13 +178,13 @@ namespace FormatConverter
 
             if (File.Exists(outputFile) && !opts.Force)
             {
-                logger.WriteError($"Output file '{outputFile}' already exists. Use --force to overwrite.");
+                logger.WriteError(() => $"Output file '{outputFile}' already exists. Use --force to overwrite.");
                 return 2;
             }
 
-            logger.WriteInfo($"Streaming from {opts.InputFile} → {outputFile}");
-            logger.WriteDebug($"Input format: {opts.InputFormat}, Output format: {opts.OutputFormat}");
-            logger.WriteDebug($"Encoding: {config.Encoding.EncodingName}");
+            logger.WriteInfo(() => $"Streaming from {opts.InputFile} → {outputFile}");
+            logger.WriteDebug(() => $"Input format: {opts.InputFormat}, Output format: {opts.OutputFormat}");
+            logger.WriteDebug(() => $"Encoding: {config.Encoding.EncodingName}");
 
             using var inputStream = opts.InputFile == "-"
                 ? Console.OpenStandardInput()
@@ -210,11 +210,11 @@ namespace FormatConverter
                     count++;
                     if (count % 100 == 0)
                     {
-                        logger.WriteInfo($"Processed {count} records...");
+                        logger.WriteInfo(() => $"Processed {count} records...");
 
                         var elapsed = (DateTime.UtcNow - startTime).TotalSeconds;
                         var rate = count / elapsed;
-                        logger.WriteDebug($"Processing rate: {rate:F2} records/sec");
+                        logger.WriteDebug(() => $"Processing rate: {rate:F2} records/sec");
                     }
                 }
 
@@ -222,20 +222,20 @@ namespace FormatConverter
                 logger.WriteSuccess($"Streaming conversion completed ({count} records in {totalTime:F2}s): {opts.InputFormat.ToUpper()} → {opts.OutputFormat.ToUpper()}");
 
                 var avgRate = count / totalTime;
-                logger.WriteDebug($"Average rate: {avgRate:F2} records/sec");
+                logger.WriteDebug(() => $"Average rate: {avgRate:F2} records/sec");
 
                 Console.WriteLine($"Output: {outputFile}");
                 return 0;
             }
             catch (OperationCanceledException)
             {
-                logger.WriteWarning($"Conversion canceled by user after processing {count} records.");
+                logger.WriteWarning(() => $"Conversion canceled by user after processing {count} records.");
                 return 1;
             }
             catch (Exception ex)
             {
-                logger.WriteError($"Streaming conversion failed at record {count}: {ex.Message}");
-                logger.WriteDebug($"Exception details: {ex}");
+                logger.WriteError(() => $"Streaming conversion failed at record {count}: {ex.Message}");
+                logger.WriteDebug(() => $"Exception details: {ex}");
 #if DEBUG
                 Console.Error.WriteLine(ex);
 #endif
@@ -341,7 +341,7 @@ namespace FormatConverter
         {
             if (path == "-")
             {
-                logger.WriteDebug("Reading from standard input");
+                logger.WriteDebug(() => "Reading from standard input");
                 using var reader = new StreamReader(Console.OpenStandardInput(), config.Encoding);
                 return reader.ReadToEnd();
             }
@@ -351,12 +351,12 @@ namespace FormatConverter
 
             var fileInfo = new FileInfo(path);
 
-            logger.WriteDebug($"Input file size: {fileInfo.Length} bytes ({fileInfo.Length / 1024.0:F2} KB)");
+            logger.WriteDebug(() => $"Input file size: {fileInfo.Length} bytes ({fileInfo.Length / 1024.0:F2} KB)");
 
             if (fileInfo.Length > 50 * 1024 * 1024)
             {
-                logger.WriteWarning($"Large input file detected: {fileInfo.Length / 1024 / 1024}MB");
-                logger.WriteWarning("Consider using --streaming mode for better performance");
+                logger.WriteWarning(() => $"Large input file detected: {fileInfo.Length / 1024 / 1024}MB");
+                logger.WriteWarning(() => "Consider using --streaming mode for better performance");
             }
 
             if (BinaryFormats.Contains(format.ToLower()) && fileInfo.Length == 0)
@@ -371,7 +371,7 @@ namespace FormatConverter
         {
             if (opts.InputFile == "-")
             {
-                logger.WriteDebug("Writing to standard output");
+                logger.WriteDebug(() => "Writing to standard output");
                 WriteToStream(Console.OpenStandardOutput(), result, config);
                 return 0;
             }
@@ -380,18 +380,18 @@ namespace FormatConverter
 
             if (File.Exists(outputFile) && !opts.Force)
             {
-                logger.WriteError($"Output file '{outputFile}' already exists. Use --force to overwrite.");
+                logger.WriteError(() => $"Output file '{outputFile}' already exists. Use --force to overwrite.");
                 return 2;
             }
 
             try
             {
-                logger.WriteDebug($"Writing output to: {outputFile}");
+                logger.WriteDebug(() => $"Writing output to: {outputFile}");
 
                 WriteOutput(outputFile, result, opts.OutputFormat, config);
 
                 var fileInfo = new FileInfo(outputFile);
-                logger.WriteDebug($"Output file size: {fileInfo.Length} bytes ({fileInfo.Length / 1024.0:F2} KB)");
+                logger.WriteDebug(() => $"Output file size: {fileInfo.Length} bytes ({fileInfo.Length / 1024.0:F2} KB)");
 
                 logger.WriteSuccess($"Success: {opts.InputFormat.ToUpper()} → {opts.OutputFormat.ToUpper()}");
                 Console.WriteLine($"Output: {outputFile}");
@@ -399,8 +399,8 @@ namespace FormatConverter
             }
             catch (Exception ex)
             {
-                logger.WriteError($"Failed to write output file: {ex.Message}");
-                logger.WriteDebug($"Exception details: {ex}");
+                logger.WriteError(() => $"Failed to write output file: {ex.Message}");
+                logger.WriteDebug(() => $"Exception details: {ex}");
                 return 4;
             }
         }
@@ -448,23 +448,23 @@ namespace FormatConverter
 
         internal static void ShowVersionInfo(ILogger logger)
         {
-            logger.WriteInfo($"FormatConverter CLI v{VERSION}");
-            logger.WriteInfo("Usage examples:");
-            logger.WriteInfo("  FormatConverter -i data.json --input-format json --output-format xml --pretty");
-            logger.WriteInfo("  FormatConverter -i data.xml --input-format xml --output-format yaml --minify");
-            logger.WriteInfo("  FormatConverter -i data.json --input-format json --output-format bxml --streaming");
+            logger.WriteInfo(() => $"FormatConverter CLI v{VERSION}");
+            logger.WriteInfo(() => "Usage examples:");
+            logger.WriteInfo(() => "  FormatConverter -i data.json --input-format json --output-format xml --pretty");
+            logger.WriteInfo(() => "  FormatConverter -i data.xml --input-format xml --output-format yaml --minify");
+            logger.WriteInfo(() => "  FormatConverter -i data.json --input-format json --output-format bxml --streaming");
         }
 
         internal static void ShowSupportedFormats(ILogger logger)
         {
-            logger.WriteInfo("Supported formats:");
+            logger.WriteInfo(() => "Supported formats:");
             foreach (var f in FormatStrategyFactory.GetSupportedFormats())
-                logger.WriteInfo($"  - {f}");
+                logger.WriteInfo(() => $"  - {f}");
         }
 
         internal static void ValidateOptions(Options opts, ILogger logger)
         {
-            logger.WriteDebug("Validating command line options");
+            logger.WriteDebug(() => "Validating command line options");
 
             if (string.IsNullOrEmpty(opts.InputFile))
                 throw new ArgumentException("Input file is required");
@@ -478,7 +478,7 @@ namespace FormatConverter
                 throw new ArgumentException($"Unsupported compression type: {opts.Compression}");
             }
 
-            logger.WriteDebug("Options validation passed");
+            logger.WriteDebug(() => "Options validation passed");
         }
         #endregion
     }

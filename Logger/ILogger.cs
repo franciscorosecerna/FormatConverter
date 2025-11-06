@@ -7,14 +7,14 @@
     {
         VerbosityLevel Verbosity { get; set; }
 
-        void Write(VerbosityLevel level, string message);
+        void Write(VerbosityLevel level, Func<string> message);
 
-        void WriteError(string message);
-        void WriteWarning(string message);
-        void WriteInfo(string message);
+        void WriteError(Func<string> message);
+        void WriteWarning(Func<string> message);
+        void WriteInfo(Func<string> message);
         void WriteSuccess(string message);
-        void WriteDebug(string message);
-        void WriteTrace(string message);
+        void WriteDebug(Func<string> message);
+        void WriteTrace(Func<string> message);
         void WriteColored(ConsoleColor color, string prefix, string message, bool stderr = false);
     }
 

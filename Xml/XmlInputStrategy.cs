@@ -11,17 +11,17 @@ namespace FormatConverter.Xml
     {
         public override JToken Parse(string input)
         {
-            Logger.WriteTrace("Parse: Starting XML parsing");
+            Logger.WriteTrace(() => "Parse: Starting XML parsing");
 
             if (string.IsNullOrWhiteSpace(input))
             {
-                Logger.WriteWarning("Parse: Input is null or empty");
+                Logger.WriteWarning(() => "Parse: Input is null or empty");
                 return Config.IgnoreErrors
                     ? new JObject()
                     : throw new ArgumentException("XML input cannot be null or empty", nameof(input));
             }
 
-            Logger.WriteDebug($"Parse: Input length: {input.Length} characters");
+            Logger.WriteDebug(() => $"Parse: Input length: {input.Length} characters");
             var settings = CreateXmlReaderSettings();
 
             try
@@ -32,34 +32,34 @@ namespace FormatConverter.Xml
             }
             catch (XmlException ex)
             {
-                Logger.WriteError($"Parse: XML exception occurred - {ex.Message}");
+                Logger.WriteError(() => $"Parse: XML exception occurred - {ex.Message}");
                 return HandleParsingError(ex, input);
             }
         }
 
         public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken = default)
         {
-            Logger.WriteInfo($"ParseStream: Starting stream parsing for '{path}'");
+            Logger.WriteInfo(() => $"ParseStream: Starting stream parsing for '{path}'");
 
             if (string.IsNullOrWhiteSpace(path))
             {
-                Logger.WriteError("ParseStream: Path is null or empty");
+                Logger.WriteError(() => "ParseStream: Path is null or empty");
                 throw new ArgumentException("Path cannot be null or empty.", nameof(path));
             }
 
             if (!File.Exists(path))
             {
-                Logger.WriteError($"ParseStream: File not found at '{path}'");
+                Logger.WriteError(() => $"ParseStream: File not found at '{path}'");
                 throw new FileNotFoundException("Input file not found.", path);
             }
 
-            Logger.WriteDebug($"ParseStream: File found, size: {new FileInfo(path).Length} bytes");
+            Logger.WriteDebug(() => $"ParseStream: File found, size: {new FileInfo(path).Length} bytes");
             return ParseStreamInternal(path, cancellationToken);
         }
 
         private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
         {
-            Logger.WriteTrace("ParseStreamInternal: Opening file stream");
+            Logger.WriteTrace(() => "ParseStreamInternal: Opening file stream");
 
             using var fileStream = File.OpenRead(path);
             using var streamReader = new StreamReader(fileStream, Config.Encoding ?? Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
@@ -69,7 +69,7 @@ namespace FormatConverter.Xml
             var showProgress = fileSize > 10_485_760;
             var elementsProcessed = 0;
 
-            Logger.WriteDebug("ParseStreamInternal: Starting element iteration");
+            Logger.WriteDebug(() => "ParseStreamInternal: Starting element iteration");
 
             while (xmlReader.Read())
             {
@@ -86,7 +86,7 @@ namespace FormatConverter.Xml
                         if (showProgress && elementsProcessed % 100 == 0)
                         {
                             var progress = (double)fileStream.Position / fileSize * 100;
-                            Logger.WriteInfo($"Processing: {progress:F1}% ({elementsProcessed} elements)");
+                            Logger.WriteInfo(() => $"Processing: {progress:F1}% ({elementsProcessed} elements)");
                         }
 
                         yield return token;
@@ -96,7 +96,7 @@ namespace FormatConverter.Xml
 
             if (showProgress)
             {
-                Logger.WriteInfo($"Completed: {elementsProcessed} elements processed");
+                Logger.WriteInfo(() => $"Completed: {elementsProcessed} elements processed");
             }
 
             Logger.WriteSuccess($"ParseStreamInternal: Stream parsing completed. Total elements: {elementsProcessed}");
@@ -104,43 +104,43 @@ namespace FormatConverter.Xml
 
         private JToken? ReadXmlElement(XmlReader xmlReader, string path)
         {
-            Logger.WriteTrace($"ReadXmlElement: Reading element '{xmlReader.Name}'");
+            Logger.WriteTrace(() => $"ReadXmlElement: Reading element '{xmlReader.Name}'");
 
             try
             {
                 if (XElement.ReadFrom(xmlReader) is XElement element)
                 {
                     var result = ConvertXElementToJToken(element);
-                    Logger.WriteTrace($"ReadXmlElement: Element '{element.Name.LocalName}' converted successfully");
+                    Logger.WriteTrace(() => $"ReadXmlElement: Element '{element.Name.LocalName}' converted successfully");
                     return result;
                 }
-                Logger.WriteTrace("ReadXmlElement: No element to read");
+                Logger.WriteTrace(() => "ReadXmlElement: No element to read");
                 return null;
             }
             catch (XmlException ex)
             {
                 if (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning($"XML error at line {ex.LineNumber}, " +
+                    Logger.WriteWarning(() => $"XML error at line {ex.LineNumber}, " +
                                       $"position {ex.LinePosition}: {ex.Message}");
                     return CreateErrorToken(ex, xmlReader as IXmlLineInfo);
                 }
 
-                Logger.WriteError($"ReadXmlElement: Fatal XML error at line {ex.LineNumber}, position {ex.LinePosition}");
+                Logger.WriteError(() => $"ReadXmlElement: Fatal XML error at line {ex.LineNumber}, position {ex.LinePosition}");
                 throw new FormatException(
                     $"Invalid XML at line {ex.LineNumber}, position {ex.LinePosition}: {ex.Message}",
                     ex);
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
-                Logger.WriteWarning($"Unexpected error in {path}: {ex.Message}");
+                Logger.WriteWarning(() => $"Unexpected error in {path}: {ex.Message}");
                 return CreateErrorToken(ex, path);
             }
         }
 
         private XmlReaderSettings CreateXmlReaderSettings()
         {
-            Logger.WriteTrace("CreateXmlReaderSettings: Creating XML reader settings");
+            Logger.WriteTrace(() => "CreateXmlReaderSettings: Creating XML reader settings");
 
             var settings = new XmlReaderSettings
             {
@@ -157,16 +157,16 @@ namespace FormatConverter.Xml
             if (Config.MaxDepth.HasValue)
             {
                 settings.MaxCharactersInDocument = Config.MaxDepth.Value * 1000;
-                Logger.WriteDebug($"CreateXmlReaderSettings: MaxCharactersInDocument set to {settings.MaxCharactersInDocument}");
+                Logger.WriteDebug(() => $"CreateXmlReaderSettings: MaxCharactersInDocument set to {settings.MaxCharactersInDocument}");
             }
 
-            Logger.WriteDebug($"CreateXmlReaderSettings: StrictMode={Config.StrictMode}, PrettyPrint={Config.PrettyPrint}");
+            Logger.WriteDebug(() => $"CreateXmlReaderSettings: StrictMode={Config.StrictMode}, PrettyPrint={Config.PrettyPrint}");
             return settings;
         }
 
         private JToken ParseXmlDocument(string input, XmlReaderSettings settings)
         {
-            Logger.WriteTrace("ParseXmlDocument: Parsing XML document");
+            Logger.WriteTrace(() => "ParseXmlDocument: Parsing XML document");
 
             var loadOptions = Config.PrettyPrint
                 ? LoadOptions.PreserveWhitespace
@@ -176,11 +176,11 @@ namespace FormatConverter.Xml
 
             if (doc.Root == null)
             {
-                Logger.WriteError("ParseXmlDocument: XML document has no root element");
+                Logger.WriteError(() => "ParseXmlDocument: XML document has no root element");
                 throw new FormatException("XML document has no root element");
             }
 
-            Logger.WriteDebug($"ParseXmlDocument: Root element '{doc.Root.Name.LocalName}' found");
+            Logger.WriteDebug(() => $"ParseXmlDocument: Root element '{doc.Root.Name.LocalName}' found");
             return ConvertXElementToJToken(doc.Root);
         }
 
@@ -188,28 +188,28 @@ namespace FormatConverter.Xml
         {
             if (Config.IgnoreErrors)
             {
-                Logger.WriteWarning($"XML parsing error: {ex.Message}");
+                Logger.WriteWarning(() => $"XML parsing error: {ex.Message}");
                 return CreateErrorToken(ex, input);
             }
 
-            Logger.WriteError($"HandleParsingError: Fatal XML parsing error - {ex.Message}");
+            Logger.WriteError(() => $"HandleParsingError: Fatal XML parsing error - {ex.Message}");
             throw new FormatException($"Invalid XML: {ex.Message}", ex);
         }
 
         private JToken ConvertXElementToJToken(XElement element)
         {
-            Logger.WriteTrace($"ConvertXElementToJToken: Converting element '{element.Name.LocalName}'");
+            Logger.WriteTrace(() => $"ConvertXElementToJToken: Converting element '{element.Name.LocalName}'");
 
             var typeAttr = element.Attribute("type")?.Value;
             var itemTypeAttr = element.Attribute("itemType")?.Value;
 
             if (typeAttr == "array")
             {
-                Logger.WriteTrace($"ConvertXElementToJToken: Processing array with itemType='{itemTypeAttr}'");
+                Logger.WriteTrace(() => $"ConvertXElementToJToken: Processing array with itemType='{itemTypeAttr}'");
 
                 if (itemTypeAttr == "empty")
                 {
-                    Logger.WriteTrace("ConvertXElementToJToken: Returning empty array");
+                    Logger.WriteTrace(() => "ConvertXElementToJToken: Returning empty array");
                     return new JArray();
                 }
 
@@ -218,7 +218,7 @@ namespace FormatConverter.Xml
                     var text = element.Value?.Trim();
                     if (string.IsNullOrEmpty(text))
                     {
-                        Logger.WriteTrace("ConvertXElementToJToken: Array has no elements, returning empty array");
+                        Logger.WriteTrace(() => "ConvertXElementToJToken: Array has no elements, returning empty array");
                         return new JArray();
                     }
                 }
@@ -228,7 +228,7 @@ namespace FormatConverter.Xml
 
             if (element.Name.LocalName == "item" && typeAttr != null)
             {
-                Logger.WriteTrace($"ConvertXElementToJToken: Processing typed item of type '{typeAttr}'");
+                Logger.WriteTrace(() => $"ConvertXElementToJToken: Processing typed item of type '{typeAttr}'");
                 return ConvertTypedValue(element.Value?.Trim() ?? string.Empty, typeAttr);
             }
 
@@ -241,7 +241,7 @@ namespace FormatConverter.Xml
 
             if (attributes.Count != 0)
             {
-                Logger.WriteTrace($"ConvertXElementToJToken: Processing {attributes.Count} attributes");
+                Logger.WriteTrace(() => $"ConvertXElementToJToken: Processing {attributes.Count} attributes");
             }
 
             foreach (var attr in attributes)
@@ -254,7 +254,7 @@ namespace FormatConverter.Xml
 
             if (childElements.Count > 0)
             {
-                Logger.WriteTrace($"ConvertXElementToJToken: Processing {childElements.Count} child elements");
+                Logger.WriteTrace(() => $"ConvertXElementToJToken: Processing {childElements.Count} child elements");
 
                 var grouped = childElements.GroupBy(e => e.Name.LocalName);
 
@@ -264,7 +264,7 @@ namespace FormatConverter.Xml
 
                     if (group.Key == "item" && group.All(e => e.Name.LocalName == "item"))
                     {
-                        Logger.WriteTrace($"ConvertXElementToJToken: Creating array from {group.Count()} item elements");
+                        Logger.WriteTrace(() => $"ConvertXElementToJToken: Creating array from {group.Count()} item elements");
                         var array = new JArray();
                         foreach (var item in group)
                         {
@@ -279,7 +279,7 @@ namespace FormatConverter.Xml
                     }
                     else
                     {
-                        Logger.WriteTrace($"ConvertXElementToJToken: Creating array from {group.Count()} '{propertyName}' elements");
+                        Logger.WriteTrace(() => $"ConvertXElementToJToken: Creating array from {group.Count()} '{propertyName}' elements");
                         var array = new JArray(group.Select(ConvertXElementToJToken));
                         obj[propertyName] = array;
                     }
@@ -294,7 +294,7 @@ namespace FormatConverter.Xml
                 {
                     if (typeAttr != null)
                     {
-                        Logger.WriteTrace($"ConvertXElementToJToken: Converting text value with type '{typeAttr}'");
+                        Logger.WriteTrace(() => $"ConvertXElementToJToken: Converting text value with type '{typeAttr}'");
                         return ConvertTypedValue(text, typeAttr);
                     }
                     else
@@ -304,14 +304,14 @@ namespace FormatConverter.Xml
                 }
                 else if (typeAttr == "null")
                 {
-                    Logger.WriteTrace("ConvertXElementToJToken: Returning null value");
+                    Logger.WriteTrace(() => "ConvertXElementToJToken: Returning null value");
                     return JValue.CreateNull();
                 }
             }
 
             if (obj.Count == 1 && obj.ContainsKey("#text"))
             {
-                Logger.WriteTrace("ConvertXElementToJToken: Simplifying object to text value");
+                Logger.WriteTrace(() => "ConvertXElementToJToken: Simplifying object to text value");
                 return obj["#text"]!;
             }
 
@@ -332,13 +332,13 @@ namespace FormatConverter.Xml
 
         private JArray ConvertArrayElement(XElement element, string? itemType)
         {
-            Logger.WriteTrace($"ConvertArrayElement: Converting array element with itemType='{itemType}'");
+            Logger.WriteTrace(() => $"ConvertArrayElement: Converting array element with itemType='{itemType}'");
 
             var array = new JArray();
             var items = element.Elements("item");
             var itemCount = items.Count();
 
-            Logger.WriteDebug($"ConvertArrayElement: Processing {itemCount} array items");
+            Logger.WriteDebug(() => $"ConvertArrayElement: Processing {itemCount} array items");
 
             foreach (var item in items)
             {
@@ -355,17 +355,17 @@ namespace FormatConverter.Xml
                 }
             }
 
-            Logger.WriteTrace($"ConvertArrayElement: Array converted with {array.Count} items");
+            Logger.WriteTrace(() => $"ConvertArrayElement: Array converted with {array.Count} items");
             return array;
         }
 
         private JToken ConvertTypedValue(string value, string type)
         {
-            Logger.WriteTrace($"ConvertTypedValue: Converting value '{value}' to type '{type}'");
+            Logger.WriteTrace(() => $"ConvertTypedValue: Converting value '{value}' to type '{type}'");
 
             if (string.IsNullOrEmpty(value) && type != "string")
             {
-                Logger.WriteTrace($"ConvertTypedValue: Empty value for type '{type}'");
+                Logger.WriteTrace(() => $"ConvertTypedValue: Empty value for type '{type}'");
                 return type == "null" ? JValue.CreateNull() : new JValue(string.Empty);
             }
 
@@ -388,12 +388,12 @@ namespace FormatConverter.Xml
                     _ => new JValue(value)
                 };
 
-                Logger.WriteTrace($"ConvertTypedValue: Successfully converted to type '{type}'");
+                Logger.WriteTrace(() => $"ConvertTypedValue: Successfully converted to type '{type}'");
                 return result;
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
-                Logger.WriteWarning($"Failed to convert '{value}' to type '{type}': {ex.Message}");
+                Logger.WriteWarning(() => $"Failed to convert '{value}' to type '{type}': {ex.Message}");
                 return new JValue(value);
             }
         }

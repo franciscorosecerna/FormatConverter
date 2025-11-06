@@ -16,24 +16,24 @@ namespace FormatConverter.Xml
         public override string Serialize(JToken data)
         {
             ArgumentNullException.ThrowIfNull(data);
-            Logger.WriteDebug("Starting XML serialization");
+            Logger.WriteDebug(() => "Starting XML serialization");
 
             var processed = PreprocessToken(data);
 
             try
             {
                 var result = SerializeToXml(processed);
-                Logger.WriteInfo("XML serialization completed successfully");
+                Logger.WriteInfo(() => "XML serialization completed successfully");
                 return result;
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
-                Logger.WriteWarning($"XML serialization error ignored: {ex.Message}");
+                Logger.WriteWarning(() => $"XML serialization error ignored: {ex.Message}");
                 return CreateErrorXml(ex.Message);
             }
             catch (Exception ex)
             {
-                Logger.WriteError($"Critical XML serialization error: {ex.Message}");
+                Logger.WriteError(() => $"Critical XML serialization error: {ex.Message}");
                 throw;
             }
         }
@@ -43,10 +43,10 @@ namespace FormatConverter.Xml
             ArgumentNullException.ThrowIfNull(data);
             ArgumentNullException.ThrowIfNull(output);
 
-            Logger.WriteInfo("Starting XML stream serialization");
+            Logger.WriteInfo(() => "Starting XML stream serialization");
             var needsPretty = NeedsPretty();
             var chunkSize = GetChunkSize();
-            Logger.WriteDebug($"Using chunk size: {chunkSize}, pretty print: {needsPretty}");
+            Logger.WriteDebug(() => $"Using chunk size: {chunkSize}, pretty print: {needsPretty}");
 
             var rootName = SanitizeElementName(Config.XmlRootElement ?? "root");
             var settings = CreateXmlWriterSettings();
@@ -57,7 +57,7 @@ namespace FormatConverter.Xml
 
             if (!string.IsNullOrEmpty(Config.XmlNamespace))
             {
-                Logger.WriteDebug($"Using XML namespace: {Config.XmlNamespace}");
+                Logger.WriteDebug(() => $"Using XML namespace: {Config.XmlNamespace}");
             }
 
             using var writer = new StreamWriter(output, Config.Encoding, 8192, leaveOpen: true);
@@ -67,12 +67,12 @@ namespace FormatConverter.Xml
                 var standalone = Config.XmlStandalone ? " standalone=\"yes\"" : "";
                 writer.Write($"<?xml version=\"1.0\" encoding=\"{Config.Encoding.WebName}\"{standalone}?>");
                 if (needsPretty) writer.Write("\n");
-                Logger.WriteTrace("XML declaration written");
+                Logger.WriteTrace(() => "XML declaration written");
             }
 
             writer.Write(CreateOpeningTag(rootName));
             if (needsPretty) writer.Write("\n");
-            Logger.WriteTrace($"Opening root tag written: {rootName}");
+            Logger.WriteTrace(() => $"Opening root tag written: {rootName}");
 
             var buffer = new List<JToken>();
             int totalProcessed = 0;
@@ -86,7 +86,7 @@ namespace FormatConverter.Xml
 
                 if (buffer.Count >= chunkSize)
                 {
-                    Logger.WriteTrace($"Writing chunk of {buffer.Count} items to stream");
+                    Logger.WriteTrace(() => $"Writing chunk of {buffer.Count} items to stream");
                     WriteChunkToStream(buffer, writer, settings, cancellationToken);
                     totalProcessed += buffer.Count;
                     buffer.Clear();
@@ -96,38 +96,38 @@ namespace FormatConverter.Xml
             if (buffer.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                Logger.WriteTrace($"Writing final chunk of {buffer.Count} items to stream");
+                Logger.WriteTrace(() => $"Writing final chunk of {buffer.Count} items to stream");
                 WriteChunkToStream(buffer, writer, settings, cancellationToken);
                 totalProcessed += buffer.Count;
             }
 
             if (needsPretty) writer.Write("\n");
             writer.Write($"</{rootName}>");
-            Logger.WriteTrace($"Closing root tag written: {rootName}");
+            Logger.WriteTrace(() => $"Closing root tag written: {rootName}");
 
             writer.Flush();
-            Logger.WriteInfo($"XML stream serialization completed. Total items processed: {totalProcessed}");
+            Logger.WriteInfo(() => $"XML stream serialization completed. Total items processed: {totalProcessed}");
         }
 
         public void SerializeStream(IEnumerable<JToken> data, string outputPath, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrEmpty(outputPath))
             {
-                Logger.WriteError("Output path is null or empty");
+                Logger.WriteError(() => "Output path is null or empty");
                 throw new ArgumentNullException(nameof(outputPath));
             }
 
-            Logger.WriteInfo($"Serializing XML stream to file: {outputPath}");
+            Logger.WriteInfo(() => $"Serializing XML stream to file: {outputPath}");
             using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192);
             SerializeStream(data, fileStream, cancellationToken);
-            Logger.WriteInfo($"XML file created successfully: {outputPath}");
+            Logger.WriteInfo(() => $"XML file created successfully: {outputPath}");
         }
 
         private void WriteChunkToStream(List<JToken> items, StreamWriter writer, XmlWriterSettings settings, CancellationToken ct)
         {
             if (items.Count == 0) return;
 
-            Logger.WriteTrace($"Processing chunk with {items.Count} items");
+            Logger.WriteTrace(() => $"Processing chunk with {items.Count} items");
             var needsPretty = NeedsPretty();
             var indent = needsPretty ? new string(' ', Config.IndentSize ?? 2) : "";
 
@@ -141,17 +141,17 @@ namespace FormatConverter.Xml
                 {
                     var itemXml = SerializeTokenToXml(items[i], "item", settings);
                     writer.Write(itemXml);
-                    Logger.WriteTrace($"Item {i + 1}/{items.Count} serialized successfully");
+                    Logger.WriteTrace(() => $"Item {i + 1}/{items.Count} serialized successfully");
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning($"XML serialization error in item {i}: {ex.Message}");
+                    Logger.WriteWarning(() => $"XML serialization error in item {i}: {ex.Message}");
                     var errorXml = CreateErrorElement($"item_{i}", ex.Message, ex.GetType().Name);
                     writer.Write(errorXml);
                 }
                 catch (Exception ex)
                 {
-                    Logger.WriteError($"Critical XML serialization error at item {i}: {ex.Message}");
+                    Logger.WriteError(() => $"Critical XML serialization error at item {i}: {ex.Message}");
                     throw;
                 }
 
@@ -163,7 +163,7 @@ namespace FormatConverter.Xml
 
         private string SerializeToXml(JToken data)
         {
-            Logger.WriteTrace("Creating XML document structure");
+            Logger.WriteTrace(() => "Creating XML document structure");
             var rootName = SanitizeElementName(Config.XmlRootElement ?? "root");
 
             _currentNamespace = string.IsNullOrEmpty(Config.XmlNamespace)
@@ -179,7 +179,7 @@ namespace FormatConverter.Xml
 
             if (Config.StrictMode)
             {
-                Logger.WriteDebug("Validating XML in strict mode");
+                Logger.WriteDebug(() => "Validating XML in strict mode");
                 ValidateXml(result);
             }
 
@@ -191,7 +191,7 @@ namespace FormatConverter.Xml
             try
             {
                 var doc = XDocument.Parse(xml);
-                Logger.WriteTrace("XML document parsed for validation");
+                Logger.WriteTrace(() => "XML document parsed for validation");
 
                 foreach (var element in doc.Descendants())
                 {
@@ -201,7 +201,7 @@ namespace FormatConverter.Xml
                     }
                     catch (XmlException ex)
                     {
-                        Logger.WriteError($"Invalid XML element name '{element.Name.LocalName}': {ex.Message}");
+                        Logger.WriteError(() => $"Invalid XML element name '{element.Name.LocalName}': {ex.Message}");
                         throw new InvalidOperationException(
                             $"Invalid XML element name '{element.Name.LocalName}': {ex.Message}", ex);
                     }
@@ -215,23 +215,23 @@ namespace FormatConverter.Xml
                     }
                     catch (XmlException ex)
                     {
-                        Logger.WriteError($"Invalid XML attribute name '{attribute.Name.LocalName}': {ex.Message}");
+                        Logger.WriteError(() => $"Invalid XML attribute name '{attribute.Name.LocalName}': {ex.Message}");
                         throw new InvalidOperationException(
                             $"Invalid XML attribute name '{attribute.Name.LocalName}': {ex.Message}", ex);
                     }
                 }
 
-                Logger.WriteDebug("XML validation passed");
+                Logger.WriteDebug(() => "XML validation passed");
             }
             catch (Exception ex) when (!Config.StrictMode)
             {
-                Logger.WriteWarning($"XML validation failed (ignored): {ex.Message}");
+                Logger.WriteWarning(() => $"XML validation failed (ignored): {ex.Message}");
             }
         }
 
         private string CreateXmlDocument(XElement root)
         {
-            Logger.WriteTrace("Creating XML document with declaration");
+            Logger.WriteTrace(() => "Creating XML document with declaration");
             var doc = new XDocument();
 
             if (Config.XmlIncludeDeclaration)
@@ -241,7 +241,7 @@ namespace FormatConverter.Xml
                     Config.Encoding.WebName,
                     Config.XmlStandalone ? "yes" : null
                 );
-                Logger.WriteTrace($"XML declaration added: {Config.Encoding.WebName}");
+                Logger.WriteTrace(() => $"XML declaration added: {Config.Encoding.WebName}");
             }
 
             doc.Add(root);
@@ -259,7 +259,7 @@ namespace FormatConverter.Xml
 
         private string SerializeTokenToXml(JToken token, string elementName, XmlWriterSettings settings)
         {
-            Logger.WriteTrace($"Serializing token to XML element: {elementName}");
+            Logger.WriteTrace(() => $"Serializing token to XML element: {elementName}");
             var element = new XElement(_currentNamespace + SanitizeElementName(elementName));
             ConvertJTokenToXElement(token, element);
 
@@ -306,7 +306,7 @@ namespace FormatConverter.Xml
 
         private void ConvertJObjectToXElement(JObject jObject, XElement parent)
         {
-            Logger.WriteTrace($"Converting JObject with {jObject.Properties().Count()} properties to XML");
+            Logger.WriteTrace(() => $"Converting JObject with {jObject.Properties().Count()} properties to XML");
 
             foreach (var property in jObject.Properties())
             {
@@ -315,7 +315,7 @@ namespace FormatConverter.Xml
                     var attrName = SanitizeElementName(property.Name.Substring(1));
                     var attrValue = GetValueAsString(property.Value);
                     parent.SetAttributeValue(attrName, attrValue);
-                    Logger.WriteTrace($"Attribute added: {attrName}");
+                    Logger.WriteTrace(() => $"Attribute added: {attrName}");
                 }
                 else if (property.Name == "#text")
                 {
@@ -325,7 +325,7 @@ namespace FormatConverter.Xml
                 {
                     var attrValue = GetValueAsString(property.Value);
                     parent.SetAttributeValue(SanitizeElementName(property.Name), attrValue);
-                    Logger.WriteTrace($"Simple value as attribute: {property.Name}");
+                    Logger.WriteTrace(() => $"Simple value as attribute: {property.Name}");
                 }
                 else
                 {
@@ -348,7 +348,7 @@ namespace FormatConverter.Xml
 
         private void ConvertJArrayToXElement(JArray jArray, XElement parent)
         {
-            Logger.WriteTrace($"Converting JArray with {jArray.Count} items to XML");
+            Logger.WriteTrace(() => $"Converting JArray with {jArray.Count} items to XML");
             parent.SetAttributeValue("type", "array");
 
             if (jArray.Count == 0)
@@ -361,7 +361,7 @@ namespace FormatConverter.Xml
             if (!string.IsNullOrEmpty(arrayType))
             {
                 parent.SetAttributeValue("itemType", arrayType);
-                Logger.WriteTrace($"Array type detected: {arrayType}");
+                Logger.WriteTrace(() => $"Array type detected: {arrayType}");
             }
 
             foreach (var item in jArray)
@@ -390,7 +390,7 @@ namespace FormatConverter.Xml
 
             if (Config.XmlUseCData && ContainsXmlSpecialCharacters(textValue))
             {
-                Logger.WriteTrace("Using CDATA for value with special characters");
+                Logger.WriteTrace(() => "Using CDATA for value with special characters");
                 parent.Add(new XCData(EscapeCDataContent(textValue)));
             }
             else
@@ -463,7 +463,7 @@ namespace FormatConverter.Xml
 
         private XmlWriterSettings CreateXmlWriterSettings()
         {
-            Logger.WriteTrace("Creating XML writer settings");
+            Logger.WriteTrace(() => "Creating XML writer settings");
             return new XmlWriterSettings
             {
                 Indent = NeedsPretty(),
@@ -483,12 +483,12 @@ namespace FormatConverter.Xml
                 if (!string.IsNullOrEmpty(Config.XmlNamespacePrefix))
                 {
                     sb.Append($" xmlns:{Config.XmlNamespacePrefix}=\"{SecurityElement.Escape(Config.XmlNamespace)}\"");
-                    Logger.WriteTrace($"Namespace with prefix added: {Config.XmlNamespacePrefix}");
+                    Logger.WriteTrace(() => $"Namespace with prefix added: {Config.XmlNamespacePrefix}");
                 }
                 else
                 {
                     sb.Append($" xmlns=\"{SecurityElement.Escape(Config.XmlNamespace)}\"");
-                    Logger.WriteTrace("Default namespace added");
+                    Logger.WriteTrace(() => "Default namespace added");
                 }
             }
 
@@ -503,18 +503,18 @@ namespace FormatConverter.Xml
             if (!string.IsNullOrEmpty(Config.XmlNamespacePrefix))
             {
                 root.Add(new XAttribute(XNamespace.Xmlns + Config.XmlNamespacePrefix, Config.XmlNamespace));
-                Logger.WriteTrace($"Namespace configured with prefix: {Config.XmlNamespacePrefix}");
+                Logger.WriteTrace(() => $"Namespace configured with prefix: {Config.XmlNamespacePrefix}");
             }
             else
             {
                 root.Add(new XAttribute("xmlns", Config.XmlNamespace));
-                Logger.WriteTrace("Default namespace configured");
+                Logger.WriteTrace(() => "Default namespace configured");
             }
         }
 
         private string CreateErrorElement(string elementName, string errorMessage, string errorType)
         {
-            Logger.WriteDebug($"Creating error element for {errorType}");
+            Logger.WriteDebug(() => $"Creating error element for {errorType}");
             var element = new XElement(
                 _currentNamespace + SanitizeElementName(elementName),
                 new XAttribute("error", errorMessage),
@@ -533,7 +533,7 @@ namespace FormatConverter.Xml
 
         private string CreateErrorXml(string errorMessage)
         {
-            Logger.WriteDebug("Creating error XML document");
+            Logger.WriteDebug(() => "Creating error XML document");
             var errorElement = new XElement(_currentNamespace + "error",
                 new XElement("message", errorMessage),
                 new XElement("timestamp", DateTime.UtcNow.ToString("o"))

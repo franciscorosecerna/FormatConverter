@@ -244,7 +244,7 @@ namespace FormatConverter.Interfaces
                     }
                     catch (OverflowException)
                     {
-                        Logger?.WriteWarning($"Number too large for hexadecimal format: {number}");
+                        Logger?.WriteWarning(() => $"Number too large for hexadecimal format: {number}");
                         return new JValue(number.ToString());
                     }
                 case "binary":
@@ -256,7 +256,7 @@ namespace FormatConverter.Interfaces
                     }
                     catch (OverflowException)
                     {
-                        Logger?.WriteWarning($"Number too large for binary format: {number}");
+                        Logger?.WriteWarning(() => $"Number too large for binary format: {number}");
                         return new JValue(number.ToString());
                     }
                 case "scientific":
@@ -267,7 +267,7 @@ namespace FormatConverter.Interfaces
                     }
                     catch (OverflowException)
                     {
-                        Logger?.WriteWarning($"Number conversion error for scientific format: {number}");
+                        Logger?.WriteWarning(() => $"Number conversion error for scientific format: {number}");
                         return new JValue(number.ToString());
                     }
                 default:
@@ -297,7 +297,7 @@ namespace FormatConverter.Interfaces
                 }
                 catch (FormatException ex)
                 {
-                    Logger?.WriteWarning($"Invalid date format '{Config.DateFormat}': {ex.Message}");
+                    Logger?.WriteWarning(() => $"Invalid date format '{Config.DateFormat}': {ex.Message}");
                     return new JValue(dateTime.ToString("yyyy-MM-ddTHH:mm:ss.fff", CultureInfo.InvariantCulture));
                 }
             }

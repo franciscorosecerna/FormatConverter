@@ -10,35 +10,35 @@ namespace FormatConverter.Protobuf
     {
         public override JToken Parse(string input)
         {
-            Logger.WriteTrace("Parse: Starting Protobuf parsing");
+            Logger.WriteTrace(() => "Parse: Starting Protobuf parsing");
 
             if (string.IsNullOrWhiteSpace(input))
             {
-                Logger.WriteWarning("Parse: Input is null or empty");
+                Logger.WriteWarning(() => "Parse: Input is null or empty");
                 return Config.IgnoreErrors
                     ? new JObject()
                     : throw new ArgumentException("Protobuf input cannot be null or empty", nameof(input));
             }
 
-            Logger.WriteDebug($"Parse: Input length: {input.Length} characters");
+            Logger.WriteDebug(() => $"Parse: Input length: {input.Length} characters");
 
             try
             {
                 var bytes = DecodeInput(input);
-                Logger.WriteDebug($"Parse: Decoded to {bytes.Length} bytes");
+                Logger.WriteDebug(() => $"Parse: Decoded to {bytes.Length} bytes");
 
                 var token = ParseProtobufDocument(bytes);
-                Logger.WriteTrace($"Parse: Parsed to token type {token.Type}");
+                Logger.WriteTrace(() => $"Parse: Parsed to token type {token.Type}");
 
                 if (Config.NoMetadata)
                 {
-                    Logger.WriteDebug("Parse: Removing metadata properties");
+                    Logger.WriteDebug(() => "Parse: Removing metadata properties");
                     token = RemoveMetadataProperties(token);
                 }
 
                 if (Config.MaxDepth.HasValue)
                 {
-                    Logger.WriteDebug($"Parse: Validating depth (max: {Config.MaxDepth.Value})");
+                    Logger.WriteDebug(() => $"Parse: Validating depth (max: {Config.MaxDepth.Value})");
                     ValidateDepth(token, Config.MaxDepth.Value);
                 }
 
@@ -47,41 +47,41 @@ namespace FormatConverter.Protobuf
             }
             catch (Exception ex) when (ex is not FormatException && ex is not ArgumentException)
             {
-                Logger.WriteError($"Parse: Exception occurred - {ex.Message}");
+                Logger.WriteError(() => $"Parse: Exception occurred - {ex.Message}");
                 return HandleParsingError(ex, input);
             }
         }
 
         public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken = default)
         {
-            Logger.WriteInfo($"ParseStream: Starting stream parsing for '{path}'");
+            Logger.WriteInfo(() => $"ParseStream: Starting stream parsing for '{path}'");
 
             if (string.IsNullOrWhiteSpace(path))
             {
-                Logger.WriteError("ParseStream: Path is null or empty");
+                Logger.WriteError(() => "ParseStream: Path is null or empty");
                 throw new ArgumentException("Path cannot be null or empty.", nameof(path));
             }
 
             if (!File.Exists(path))
             {
-                Logger.WriteError($"ParseStream: File not found at '{path}'");
+                Logger.WriteError(() => $"ParseStream: File not found at '{path}'");
                 throw new FileNotFoundException("Input file not found.", path);
             }
 
-            Logger.WriteDebug($"ParseStream: File found, size: {new FileInfo(path).Length} bytes");
+            Logger.WriteDebug(() => $"ParseStream: File found, size: {new FileInfo(path).Length} bytes");
             return ParseStreamInternal(path, cancellationToken);
         }
 
         private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
         {
-            Logger.WriteTrace("ParseStreamInternal: Opening file stream");
+            Logger.WriteTrace(() => "ParseStreamInternal: Opening file stream");
 
             using var fileStream = File.OpenRead(path);
 
             var fileSize = fileStream.Length;
             var showProgress = fileSize > 10_485_760;
 
-            Logger.WriteDebug($"ParseStreamInternal: File size: {fileSize:N0} bytes, progress logging: {showProgress}");
+            Logger.WriteDebug(() => $"ParseStreamInternal: File size: {fileSize:N0} bytes, progress logging: {showProgress}");
 
             const int BufferSize = 8192;
             var arrayPool = ArrayPool<byte>.Shared;
@@ -89,7 +89,7 @@ namespace FormatConverter.Protobuf
             byte[] accumulator = arrayPool.Rent(BufferSize * 2);
             int accumulatorLength = 0;
 
-            Logger.WriteTrace($"ParseStreamInternal: Using buffer size {BufferSize}, initial accumulator size {BufferSize * 2}");
+            Logger.WriteTrace(() => $"ParseStreamInternal: Using buffer size {BufferSize}, initial accumulator size {BufferSize * 2}");
 
             int bytesRead;
             int messagesProcessed = 0;
@@ -103,7 +103,7 @@ namespace FormatConverter.Protobuf
                     if (accumulatorLength + bytesRead > accumulator.Length)
                     {
                         var newSize = Math.Max(accumulator.Length * 2, accumulatorLength + bytesRead);
-                        Logger.WriteDebug($"ParseStreamInternal: Expanding accumulator from {accumulator.Length} to {newSize} bytes");
+                        Logger.WriteDebug(() => $"ParseStreamInternal: Expanding accumulator from {accumulator.Length} to {newSize} bytes");
 
                         var newAccumulator = arrayPool.Rent(newSize);
                         Buffer.BlockCopy(accumulator, 0, newAccumulator, 0, accumulatorLength);
@@ -130,10 +130,10 @@ namespace FormatConverter.Protobuf
                             if (showProgress && messagesProcessed % 100 == 0)
                             {
                                 var progress = (double)fileStream.Position / fileStream.Length * 100;
-                                Logger.WriteInfo($"Processing: {progress:F1}% ({messagesProcessed} messages)");
+                                Logger.WriteInfo(() => $"Processing: {progress:F1}% ({messagesProcessed} messages)");
                             }
 
-                            Logger.WriteTrace($"ParseStreamInternal: Message {messagesProcessed} parsed, consumed {consumed} bytes");
+                            Logger.WriteTrace(() => $"ParseStreamInternal: Message {messagesProcessed} parsed, consumed {consumed} bytes");
 
                             if (Config.NoMetadata)
                                 token = RemoveMetadataProperties(token);
@@ -151,19 +151,20 @@ namespace FormatConverter.Protobuf
                         {
                             if (Config.IgnoreErrors)
                             {
-                                Logger.WriteWarning(error.Message);
+                                Logger.WriteWarning(() => error.Message);
                                 yield return CreateErrorToken(error, $"File: {path}, Offset: {fileStream.Position - accumulatorLength + processed}");
                                 processed += Math.Max(1, consumed);
                             }
                             else
                             {
-                                Logger.WriteError($"ParseStreamInternal: Fatal error - {error.Message}");
+                                Logger.WriteError(() => $"ParseStreamInternal: Fatal error - {error.Message}");
                                 throw error;
                             }
                         }
                         else
                         {
-                            Logger.WriteTrace($"ParseStreamInternal: Incomplete message, need more data (available: {availableSpan.Length} bytes)");
+                            int lenght = availableSpan.Length;
+                            Logger.WriteTrace(() => $"ParseStreamInternal: Incomplete message, need more data (available: {lenght} bytes)");
                             break;
                         }
                     }
@@ -176,38 +177,38 @@ namespace FormatConverter.Protobuf
                             Buffer.BlockCopy(accumulator, processed, accumulator, 0, remaining);
                         }
                         accumulatorLength = remaining;
-                        Logger.WriteTrace($"ParseStreamInternal: Processed {processed} bytes, {remaining} bytes remaining in accumulator");
+                        Logger.WriteTrace(() => $"ParseStreamInternal: Processed {processed} bytes, {remaining} bytes remaining in accumulator");
                     }
                 }
 
                 if (accumulatorLength > 0)
                 {
-                    Logger.WriteWarning($"ParseStreamInternal: {accumulatorLength} bytes of incomplete data at end of file");
+                    Logger.WriteWarning(() => $"ParseStreamInternal: {accumulatorLength} bytes of incomplete data at end of file");
 
                     if (Config.IgnoreErrors)
                     {
-                        Logger.WriteWarning($"{accumulatorLength} bytes of incomplete Protobuf data at end of file");
+                        Logger.WriteWarning(() => $"{accumulatorLength} bytes of incomplete Protobuf data at end of file");
                         yield return CreateErrorToken(
                             new FormatException($"Incomplete Protobuf data: {accumulatorLength} bytes remaining"),
                             $"File: {path}");
                     }
                     else
                     {
-                        Logger.WriteError($"ParseStreamInternal: Incomplete message at end ({accumulatorLength} bytes)");
+                        Logger.WriteError(() => $"ParseStreamInternal: Incomplete message at end ({accumulatorLength} bytes)");
                         throw new FormatException($"Incomplete Protobuf message at end of file ({accumulatorLength} bytes remaining)");
                     }
                 }
 
                 if (showProgress)
                 {
-                    Logger.WriteInfo($"Completed: {messagesProcessed} messages processed");
+                    Logger.WriteInfo(() => $"Completed: {messagesProcessed} messages processed");
                 }
 
                 Logger.WriteSuccess($"ParseStreamInternal: Stream parsing completed. Total messages: {messagesProcessed}");
             }
             finally
             {
-                Logger.WriteTrace("ParseStreamInternal: Returning buffers to pool");
+                Logger.WriteTrace(() => "ParseStreamInternal: Returning buffers to pool");
                 arrayPool.Return(buffer);
                 arrayPool.Return(accumulator);
             }
@@ -216,13 +217,15 @@ namespace FormatConverter.Protobuf
         private (bool success, JToken? token, int consumed, Exception? error)
             TryReadNextProtobufMessage(ReadOnlySpan<byte> data, string path)
         {
-            Logger.WriteTrace($"TryReadNextProtobufMessage: Attempting to read message from {data.Length} bytes");
+            int length = data.Length;
+            Logger.WriteTrace(() => $"TryReadNextProtobufMessage: Attempting to read message from {length} bytes");
+
 
             try
             {
                 if (data.Length < 1)
                 {
-                    Logger.WriteTrace("TryReadNextProtobufMessage: Insufficient data (< 1 byte)");
+                    Logger.WriteTrace(() => "TryReadNextProtobufMessage: Insufficient data (< 1 byte)");
                     return (false, null, 0, null);
                 }
 
@@ -230,33 +233,33 @@ namespace FormatConverter.Protobuf
 
                 if (messageBytes != null)
                 {
-                    Logger.WriteTrace($"TryReadNextProtobufMessage: Extracted length-delimited message ({messageBytes.Length} bytes, consumed {consumed})");
+                    Logger.WriteTrace(() => $"TryReadNextProtobufMessage: Extracted length-delimited message ({messageBytes.Length} bytes, consumed {consumed})");
                     var token = ParseProtobufDocument(messageBytes);
                     return (true, token, consumed, null);
                 }
 
-                Logger.WriteTrace("TryReadNextProtobufMessage: Length-delimited extraction failed, trying single message");
+                Logger.WriteTrace(() => "TryReadNextProtobufMessage: Length-delimited extraction failed, trying single message");
                 messageBytes = TryExtractSingleMessage(data, out consumed);
 
                 if (messageBytes != null)
                 {
-                    Logger.WriteTrace($"TryReadNextProtobufMessage: Extracted single message ({messageBytes.Length} bytes, consumed {consumed})");
+                    Logger.WriteTrace(() => $"TryReadNextProtobufMessage: Extracted single message ({messageBytes.Length} bytes, consumed {consumed})");
                     var token = ParseProtobufDocument(messageBytes);
                     return (true, token, consumed, null);
                 }
 
-                Logger.WriteTrace("TryReadNextProtobufMessage: Could not extract complete message");
+                Logger.WriteTrace(() => "TryReadNextProtobufMessage: Could not extract complete message");
                 return (false, null, 0, null);
             }
             catch (InvalidProtocolBufferException ex)
             {
-                Logger.WriteWarning($"TryReadNextProtobufMessage: Invalid Protobuf data - {ex.Message}");
+                Logger.WriteWarning(() => $"TryReadNextProtobufMessage: Invalid Protobuf data - {ex.Message}");
                 return (false, null, 0,
                     new FormatException($"Invalid Protobuf data: {ex.Message}", ex));
             }
             catch (Exception ex)
             {
-                Logger.WriteWarning($"TryReadNextProtobufMessage: Unexpected error - {ex.Message}");
+                Logger.WriteWarning(() => $"TryReadNextProtobufMessage: Unexpected error - {ex.Message}");
                 return (false, null, 0,
                     new FormatException($"Unexpected Protobuf error in {path}: {ex.Message}", ex));
             }
@@ -265,7 +268,7 @@ namespace FormatConverter.Protobuf
         private void ValidateDepth(JToken token, int maxDepth)
         {
             var actualDepth = CalculateDepth(token);
-            Logger.WriteDebug($"ValidateDepth: Calculated depth: {actualDepth}, max allowed: {maxDepth}");
+            Logger.WriteDebug(() => $"ValidateDepth: Calculated depth: {actualDepth}, max allowed: {maxDepth}");
 
             if (actualDepth > maxDepth)
             {
@@ -273,11 +276,11 @@ namespace FormatConverter.Protobuf
 
                 if (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning(message);
+                    Logger.WriteWarning(() => message);
                 }
                 else
                 {
-                    Logger.WriteError($"ValidateDepth: {message}");
+                    Logger.WriteError(() => $"ValidateDepth: {message}");
                     throw new FormatException(message);
                 }
             }
@@ -409,11 +412,11 @@ namespace FormatConverter.Protobuf
 
         private JToken ParseProtobufDocument(byte[] bytes)
         {
-            Logger.WriteTrace($"ParseProtobufDocument: Parsing {bytes.Length} bytes");
+            Logger.WriteTrace(() => $"ParseProtobufDocument: Parsing {bytes.Length} bytes");
 
             if (bytes == null || bytes.Length == 0)
             {
-                Logger.WriteError("ParseProtobufDocument: Input is empty or null");
+                Logger.WriteError(() => "ParseProtobufDocument: Input is empty or null");
                 throw new FormatException("Protobuf input is empty or null");
             }
 
@@ -422,7 +425,7 @@ namespace FormatConverter.Protobuf
                            TryParseAsValue(bytes) ??
                            ParseAsGenericMessage(bytes);
 
-            Logger.WriteTrace($"ParseProtobufDocument: Successfully parsed to {result.Type}");
+            Logger.WriteTrace(() => $"ParseProtobufDocument: Successfully parsed to {result.Type}");
             return result;
         }
 
@@ -430,11 +433,11 @@ namespace FormatConverter.Protobuf
         {
             if (Config.IgnoreErrors)
             {
-                Logger.WriteWarning($"Protobuf parsing error: {ex.Message}");
+                Logger.WriteWarning(() => $"Protobuf parsing error: {ex.Message}");
                 return CreateErrorToken(ex, input);
             }
 
-            Logger.WriteError($"HandleParsingError: Fatal error - {ex.Message}");
+            Logger.WriteError(() => $"HandleParsingError: Fatal error - {ex.Message}");
             throw new FormatException($"Invalid Protobuf: {ex.Message}", ex);
         }
 
@@ -497,7 +500,7 @@ namespace FormatConverter.Protobuf
 
         private JToken RemoveMetadataProperties(JToken token)
         {
-            Logger.WriteTrace($"RemoveMetadataProperties: Processing token type {token.Type}");
+            Logger.WriteTrace(() => $"RemoveMetadataProperties: Processing token type {token.Type}");
 
             if (token is JObject obj)
             {
@@ -519,7 +522,7 @@ namespace FormatConverter.Protobuf
 
                 if (removedCount > 0)
                 {
-                    Logger.WriteDebug($"RemoveMetadataProperties: Removed {removedCount} metadata properties");
+                    Logger.WriteDebug(() => $"RemoveMetadataProperties: Removed {removedCount} metadata properties");
                 }
 
                 return result;
@@ -556,17 +559,17 @@ namespace FormatConverter.Protobuf
 
         private JObject? TryParseAsStruct(byte[] bytes)
         {
-            Logger.WriteTrace($"TryParseAsStruct: Attempting to parse {bytes.Length} bytes as Struct");
+            Logger.WriteTrace(() => $"TryParseAsStruct: Attempting to parse {bytes.Length} bytes as Struct");
 
             try
             {
                 var protobufStruct = Struct.Parser.ParseFrom(bytes);
-                Logger.WriteDebug($"TryParseAsStruct: Successfully parsed as Struct with {protobufStruct.Fields.Count} fields");
+                Logger.WriteDebug(() => $"TryParseAsStruct: Successfully parsed as Struct with {protobufStruct.Fields.Count} fields");
                 return ConvertStructToJToken(protobufStruct);
             }
             catch (Exception ex)
             {
-                Logger.WriteTrace($"TryParseAsStruct: Failed - {ex.Message}");
+                Logger.WriteTrace(() => $"TryParseAsStruct: Failed - {ex.Message}");
                 return null;
             }
         }
@@ -586,17 +589,17 @@ namespace FormatConverter.Protobuf
 
         private JToken? TryParseAsValue(byte[] bytes)
         {
-            Logger.WriteTrace($"TryParseAsValue: Attempting to parse {bytes.Length} bytes as Value");
+            Logger.WriteTrace(() => $"TryParseAsValue: Attempting to parse {bytes.Length} bytes as Value");
 
             try
             {
                 var value = Value.Parser.ParseFrom(bytes);
-                Logger.WriteDebug($"TryParseAsValue: Successfully parsed as Value (kind: {value.KindCase})");
+                Logger.WriteDebug(() => $"TryParseAsValue: Successfully parsed as Value (kind: {value.KindCase})");
                 return ConvertValueToJToken(value);
             }
             catch (Exception ex)
             {
-                Logger.WriteTrace($"TryParseAsValue: Failed - {ex.Message}");
+                Logger.WriteTrace(() => $"TryParseAsValue: Failed - {ex.Message}");
                 return null;
             }
         }
@@ -653,7 +656,7 @@ namespace FormatConverter.Protobuf
 
         private JObject ConvertStructToJToken(Struct protobufStruct, int currentDepth = 1)
         {
-            Logger.WriteTrace($"ConvertStructToJToken: Converting Struct with {protobufStruct.Fields.Count} fields at depth {currentDepth}");
+            Logger.WriteTrace(() => $"ConvertStructToJToken: Converting Struct with {protobufStruct.Fields.Count} fields at depth {currentDepth}");
 
             if (Config.MaxDepth.HasValue && currentDepth > Config.MaxDepth.Value)
             {
@@ -661,7 +664,7 @@ namespace FormatConverter.Protobuf
 
                 if (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning(message);
+                    Logger.WriteWarning(() => message);
                     var errorObj = new JObject
                     {
                         ["_depth_error"] = $"Depth limit exceeded at level {currentDepth}"
@@ -669,7 +672,7 @@ namespace FormatConverter.Protobuf
                     return errorObj;
                 }
 
-                Logger.WriteError($"ConvertStructToJToken: {message}");
+                Logger.WriteError(() => $"ConvertStructToJToken: {message}");
                 throw new FormatException(message);
             }
 
@@ -696,7 +699,7 @@ namespace FormatConverter.Protobuf
 
         private JToken ConvertValueToJToken(Value value, int currentDepth = 1)
         {
-            Logger.WriteTrace($"ConvertValueToJToken: Converting Value (kind: {value.KindCase}) at depth {currentDepth}");
+            Logger.WriteTrace(() => $"ConvertValueToJToken: Converting Value (kind: {value.KindCase}) at depth {currentDepth}");
 
             if (Config.MaxDepth.HasValue && currentDepth > Config.MaxDepth.Value)
             {
@@ -704,11 +707,11 @@ namespace FormatConverter.Protobuf
 
                 if (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning(message);
+                    Logger.WriteWarning(() => message);
                     return new JValue($"[Depth limit exceeded at level {currentDepth}]");
                 }
 
-                Logger.WriteError($"ConvertValueToJToken: {message}");
+                Logger.WriteError(() => $"ConvertValueToJToken: {message}");
                 throw new FormatException(message);
             }
 
@@ -726,7 +729,7 @@ namespace FormatConverter.Protobuf
 
         private JArray ConvertListValueToJArray(ListValue listValue, int currentDepth = 1)
         {
-            Logger.WriteTrace($"ConvertListValueToJArray: Converting ListValue with {listValue.Values.Count} items at depth {currentDepth}");
+            Logger.WriteTrace(() => $"ConvertListValueToJArray: Converting ListValue with {listValue.Values.Count} items at depth {currentDepth}");
 
             if (Config.MaxDepth.HasValue && currentDepth > Config.MaxDepth.Value)
             {
@@ -734,7 +737,7 @@ namespace FormatConverter.Protobuf
 
                 if (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning(message);
+                    Logger.WriteWarning(() => message);
                     var errorArray = new JArray
                     {
                         new JValue($"[Depth limit exceeded at level {currentDepth}]")
@@ -742,7 +745,7 @@ namespace FormatConverter.Protobuf
                     return errorArray;
                 }
 
-                Logger.WriteError($"ConvertListValueToJArray: {message}");
+                Logger.WriteError(() => $"ConvertListValueToJArray: {message}");
                 throw new FormatException(message);
             }
 

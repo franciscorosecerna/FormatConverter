@@ -11,21 +11,21 @@ namespace FormatConverter.Protobuf
     {
         public override string Serialize(JToken data)
         {
-            Logger.WriteTrace("Serialize: Starting Protobuf serialization");
+            Logger.WriteTrace(() => "Serialize: Starting Protobuf serialization");
 
             if (data == null)
             {
-                Logger.WriteError("Serialize: Data is null");
+                Logger.WriteError(() => "Serialize: Data is null");
                 throw new ArgumentNullException(nameof(data));
             }
 
-            Logger.WriteDebug($"Serialize: Input token type: {data.Type}");
+            Logger.WriteDebug(() => $"Serialize: Input token type: {data.Type}");
             var processed = PreprocessToken(data);
             var result = SerializeToken(processed);
 
             if (Config.StrictMode)
             {
-                Logger.WriteDebug("Serialize: Validating Protobuf in strict mode");
+                Logger.WriteDebug(() => "Serialize: Validating Protobuf in strict mode");
                 ValidateProtobuf(result);
             }
 
@@ -35,32 +35,32 @@ namespace FormatConverter.Protobuf
 
         public override void SerializeStream(IEnumerable<JToken> data, Stream output, CancellationToken cancellationToken = default)
         {
-            Logger.WriteInfo("SerializeStream: Starting stream serialization");
+            Logger.WriteInfo(() => "SerializeStream: Starting stream serialization");
 
             if (data == null)
             {
-                Logger.WriteError("SerializeStream: Data is null");
+                Logger.WriteError(() => "SerializeStream: Data is null");
                 throw new ArgumentNullException(nameof(data));
             }
             if (output == null)
             {
-                Logger.WriteError("SerializeStream: Output stream is null");
+                Logger.WriteError(() => "SerializeStream: Output stream is null");
                 throw new ArgumentNullException(nameof(output));
             }
 
             var chunkSize = GetChunkSize();
             var shouldWriteRaw = ShouldWriteRawBinary();
 
-            Logger.WriteDebug($"SerializeStream: Chunk size: {chunkSize}, Write raw binary: {shouldWriteRaw}");
+            Logger.WriteDebug(() => $"SerializeStream: Chunk size: {chunkSize}, Write raw binary: {shouldWriteRaw}");
 
             if (shouldWriteRaw)
             {
-                Logger.WriteDebug("SerializeStream: Using binary serialization");
+                Logger.WriteDebug(() => "SerializeStream: Using binary serialization");
                 SerializeStreamBinary(data, output, chunkSize, cancellationToken);
             }
             else
             {
-                Logger.WriteDebug("SerializeStream: Using text serialization");
+                Logger.WriteDebug(() => "SerializeStream: Using text serialization");
                 SerializeStreamText(data, output, chunkSize, cancellationToken);
             }
 
@@ -69,7 +69,7 @@ namespace FormatConverter.Protobuf
 
         private void SerializeStreamBinary(IEnumerable<JToken> data, Stream output, int chunkSize, CancellationToken cancellationToken)
         {
-            Logger.WriteTrace("SerializeStreamBinary: Starting binary stream serialization");
+            Logger.WriteTrace(() => "SerializeStreamBinary: Starting binary stream serialization");
 
             var buffer = new List<JToken>();
             var totalProcessed = 0;
@@ -83,7 +83,7 @@ namespace FormatConverter.Protobuf
 
                 if (buffer.Count >= chunkSize)
                 {
-                    Logger.WriteTrace($"SerializeStreamBinary: Writing chunk of {buffer.Count} items");
+                    Logger.WriteTrace(() => $"SerializeStreamBinary: Writing chunk of {buffer.Count} items");
                     WriteChunkToStreamBinary(buffer, output, cancellationToken);
                     totalProcessed += buffer.Count;
                     buffer.Clear();
@@ -93,7 +93,7 @@ namespace FormatConverter.Protobuf
             if (buffer.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                Logger.WriteTrace($"SerializeStreamBinary: Writing final chunk of {buffer.Count} items");
+                Logger.WriteTrace(() => $"SerializeStreamBinary: Writing final chunk of {buffer.Count} items");
                 WriteChunkToStreamBinary(buffer, output, cancellationToken);
                 totalProcessed += buffer.Count;
             }
@@ -104,7 +104,7 @@ namespace FormatConverter.Protobuf
 
         private void SerializeStreamText(IEnumerable<JToken> data, Stream output, int chunkSize, CancellationToken cancellationToken)
         {
-            Logger.WriteTrace("SerializeStreamText: Starting text stream serialization");
+            Logger.WriteTrace(() => "SerializeStreamText: Starting text stream serialization");
 
             using var writer = new StreamWriter(output, Config.Encoding, 8192, leaveOpen: true);
 
@@ -126,7 +126,7 @@ namespace FormatConverter.Protobuf
 
                 if (buffer.Count >= chunkSize)
                 {
-                    Logger.WriteTrace($"SerializeStreamText: Writing chunk of {buffer.Count} items");
+                    Logger.WriteTrace(() => $"SerializeStreamText: Writing chunk of {buffer.Count} items");
                     WriteChunkToStreamText(buffer, writer, cancellationToken, ref isFirst);
                     totalProcessed += buffer.Count;
                     buffer.Clear();
@@ -136,7 +136,7 @@ namespace FormatConverter.Protobuf
             if (buffer.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                Logger.WriteTrace($"SerializeStreamText: Writing final chunk of {buffer.Count} items");
+                Logger.WriteTrace(() => $"SerializeStreamText: Writing final chunk of {buffer.Count} items");
                 WriteChunkToStreamText(buffer, writer, cancellationToken, ref isFirst);
                 totalProcessed += buffer.Count;
             }
@@ -153,11 +153,11 @@ namespace FormatConverter.Protobuf
 
         public void SerializeStream(IEnumerable<JToken> data, string outputPath, CancellationToken cancellationToken = default)
         {
-            Logger.WriteInfo($"SerializeStream: Writing to file '{outputPath}'");
+            Logger.WriteInfo(() => $"SerializeStream: Writing to file '{outputPath}'");
 
             if (string.IsNullOrEmpty(outputPath))
             {
-                Logger.WriteError("SerializeStream: Output path is null or empty");
+                Logger.WriteError(() => "SerializeStream: Output path is null or empty");
                 throw new ArgumentNullException(nameof(outputPath));
             }
 
@@ -171,11 +171,11 @@ namespace FormatConverter.Protobuf
         {
             if (items.Count == 0)
             {
-                Logger.WriteTrace("WriteChunkToStreamBinary: Empty chunk, skipping");
+                Logger.WriteTrace(() => "WriteChunkToStreamBinary: Empty chunk, skipping");
                 return;
             }
 
-            Logger.WriteTrace($"WriteChunkToStreamBinary: Processing {items.Count} items");
+            Logger.WriteTrace(() => $"WriteChunkToStreamBinary: Processing {items.Count} items");
 
             const int initialBufferSize = 8192;
             byte[]? rentedBuffer = null;
@@ -183,7 +183,7 @@ namespace FormatConverter.Protobuf
             try
             {
                 rentedBuffer = ArrayPool<byte>.Shared.Rent(initialBufferSize);
-                Logger.WriteTrace($"WriteChunkToStreamBinary: Rented buffer of {initialBufferSize} bytes");
+                Logger.WriteTrace(() => $"WriteChunkToStreamBinary: Rented buffer of {initialBufferSize} bytes");
 
                 for (int i = 0; i < items.Count; i++)
                 {
@@ -192,7 +192,7 @@ namespace FormatConverter.Protobuf
                     try
                     {
                         var bytes = SerializeTokenToBytes(items[i]);
-                        Logger.WriteTrace($"WriteChunkToStreamBinary: Item {i} serialized to {bytes.Length} bytes");
+                        Logger.WriteTrace(() => $"WriteChunkToStreamBinary: Item {i} serialized to {bytes.Length} bytes");
 
                         if (bytes.Length <= rentedBuffer.Length)
                         {
@@ -201,13 +201,13 @@ namespace FormatConverter.Protobuf
                         }
                         else
                         {
-                            Logger.WriteDebug($"WriteChunkToStreamBinary: Item {i} exceeds buffer, writing directly");
+                            Logger.WriteDebug(() => $"WriteChunkToStreamBinary: Item {i} exceeds buffer, writing directly");
                             output.Write(bytes, 0, bytes.Length);
                         }
                     }
                     catch (Exception ex) when (Config.IgnoreErrors)
                     {
-                        Logger.WriteWarning($"Protobuf serialization error in item {i}: {ex.Message}");
+                        Logger.WriteWarning(() => $"Protobuf serialization error in item {i}: {ex.Message}");
                         var errorBytes = CreateErrorOutputBytes(ex.Message, ex.GetType().Name, items[i]);
 
                         if (errorBytes.Length <= rentedBuffer.Length)
@@ -227,7 +227,7 @@ namespace FormatConverter.Protobuf
                 if (rentedBuffer != null)
                 {
                     ArrayPool<byte>.Shared.Return(rentedBuffer);
-                    Logger.WriteTrace("WriteChunkToStreamBinary: Buffer returned to pool");
+                    Logger.WriteTrace(() => "WriteChunkToStreamBinary: Buffer returned to pool");
                 }
             }
         }
@@ -236,11 +236,11 @@ namespace FormatConverter.Protobuf
         {
             if (items.Count == 0)
             {
-                Logger.WriteTrace("WriteChunkToStreamText: Empty chunk, skipping");
+                Logger.WriteTrace(() => "WriteChunkToStreamText: Empty chunk, skipping");
                 return;
             }
 
-            Logger.WriteTrace($"WriteChunkToStreamText: Processing {items.Count} items");
+            Logger.WriteTrace(() => $"WriteChunkToStreamText: Processing {items.Count} items");
 
             for (int i = 0; i < items.Count; i++)
             {
@@ -250,13 +250,13 @@ namespace FormatConverter.Protobuf
                 {
                     var bytes = SerializeTokenToBytes(items[i]);
                     var formatted = FormatOutput(bytes);
-                    Logger.WriteTrace($"WriteChunkToStreamText: Item {i} formatted ({formatted.Length} characters)");
+                    Logger.WriteTrace(() => $"WriteChunkToStreamText: Item {i} formatted ({formatted.Length} characters)");
 
                     WriteFormattedToken(writer, formatted, ref isFirst, i < items.Count - 1);
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning($"Protobuf serialization error in item {i}: {ex.Message}");
+                    Logger.WriteWarning(() => $"Protobuf serialization error in item {i}: {ex.Message}");
                     var errorOutput = CreateErrorOutput(ex.Message, ex.GetType().Name, items[i]);
                     WriteFormattedToken(writer, errorOutput, ref isFirst, i < items.Count - 1);
                 }
@@ -290,17 +290,17 @@ namespace FormatConverter.Protobuf
 
         private string SerializeToken(JToken token)
         {
-            Logger.WriteTrace($"SerializeToken: Serializing token type {token.Type}");
+            Logger.WriteTrace(() => $"SerializeToken: Serializing token type {token.Type}");
 
             try
             {
                 var bytes = SerializeTokenToBytes(token);
-                Logger.WriteDebug($"SerializeToken: Token serialized to {bytes.Length} bytes");
+                Logger.WriteDebug(() => $"SerializeToken: Token serialized to {bytes.Length} bytes");
                 return FormatOutput(bytes);
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
-                Logger.WriteWarning($"Protobuf serialization error ignored: {ex.Message}");
+                Logger.WriteWarning(() => $"Protobuf serialization error ignored: {ex.Message}");
                 return CreateErrorOutput(ex.Message, ex.GetType().Name, token);
             }
         }
@@ -311,28 +311,28 @@ namespace FormatConverter.Protobuf
 
             if (ShouldSerializeAsAny(token))
             {
-                Logger.WriteTrace("SerializeTokenToBytes: Serializing as Any");
+                Logger.WriteTrace(() => "SerializeTokenToBytes: Serializing as Any");
                 protobufMessage = ConvertJTokenToAny(token);
             }
             else if (ShouldSerializeAsValue(token))
             {
-                Logger.WriteTrace("SerializeTokenToBytes: Serializing as Value");
+                Logger.WriteTrace(() => "SerializeTokenToBytes: Serializing as Value");
                 protobufMessage = ConvertJTokenToValue(token);
             }
             else
             {
-                Logger.WriteTrace("SerializeTokenToBytes: Serializing as Struct");
+                Logger.WriteTrace(() => "SerializeTokenToBytes: Serializing as Struct");
                 protobufMessage = ConvertJTokenToStruct(token);
             }
 
             var bytes = protobufMessage.ToByteArray();
-            Logger.WriteTrace($"SerializeTokenToBytes: Generated {bytes.Length} bytes");
+            Logger.WriteTrace(() => $"SerializeTokenToBytes: Generated {bytes.Length} bytes");
             return bytes;
         }
 
         private void ValidateProtobuf(string result)
         {
-            Logger.WriteTrace("ValidateProtobuf: Starting validation");
+            Logger.WriteTrace(() => "ValidateProtobuf: Starting validation");
 
             try
             {
@@ -341,17 +341,17 @@ namespace FormatConverter.Protobuf
                     ? ConvertFromHex(result)
                     : Convert.FromBase64String(result);
 
-                Logger.WriteDebug($"ValidateProtobuf: Validating {bytes.Length} bytes");
+                Logger.WriteDebug(() => $"ValidateProtobuf: Validating {bytes.Length} bytes");
                 var _ = Struct.Parser.ParseFrom(bytes);
-                Logger.WriteDebug("ValidateProtobuf: Validation successful");
+                Logger.WriteDebug(() => "ValidateProtobuf: Validation successful");
             }
             catch (Exception ex) when (!Config.StrictMode)
             {
-                Logger.WriteWarning($"ValidateProtobuf: Validation failed but ignored - {ex.Message}");
+                Logger.WriteWarning(() => $"ValidateProtobuf: Validation failed but ignored - {ex.Message}");
             }
             catch (Exception ex)
             {
-                Logger.WriteError($"ValidateProtobuf: Validation failed - {ex.Message}");
+                Logger.WriteError(() => $"ValidateProtobuf: Validation failed - {ex.Message}");
                 throw;
             }
         }
@@ -410,7 +410,7 @@ namespace FormatConverter.Protobuf
 
         private Value ConvertJTokenToValue(JToken token)
         {
-            Logger.WriteTrace($"ConvertJTokenToValue: Converting token type {token.Type}");
+            Logger.WriteTrace(() => $"ConvertJTokenToValue: Converting token type {token.Type}");
 
             return token.Type switch
             {
@@ -428,7 +428,7 @@ namespace FormatConverter.Protobuf
 
         private Value ConvertJArrayToValue(JArray array)
         {
-            Logger.WriteTrace($"ConvertJArrayToValue: Converting array with {array.Count} items");
+            Logger.WriteTrace(() => $"ConvertJArrayToValue: Converting array with {array.Count} items");
 
             var listValue = new ListValue();
 
@@ -442,7 +442,7 @@ namespace FormatConverter.Protobuf
 
         private Value ConvertJObjectToValue(JObject obj)
         {
-            Logger.WriteTrace($"ConvertJObjectToValue: Converting object with {obj.Count} properties");
+            Logger.WriteTrace(() => $"ConvertJObjectToValue: Converting object with {obj.Count} properties");
 
             var structValue = ConvertJObjectToStruct(obj);
             return Value.ForStruct(structValue);
@@ -450,11 +450,11 @@ namespace FormatConverter.Protobuf
 
         private Struct ConvertJTokenToStruct(JToken token)
         {
-            Logger.WriteTrace($"ConvertJTokenToStruct: Converting token type {token.Type}");
+            Logger.WriteTrace(() => $"ConvertJTokenToStruct: Converting token type {token.Type}");
 
             if (token is not JObject obj)
             {
-                Logger.WriteError($"ConvertJTokenToStruct: Cannot convert {token.Type} to Struct");
+                Logger.WriteError(() => $"ConvertJTokenToStruct: Cannot convert {token.Type} to Struct");
                 throw new FormatException("Cannot convert non-object JToken to Protobuf Struct");
             }
 
@@ -463,7 +463,7 @@ namespace FormatConverter.Protobuf
 
         private Struct ConvertJObjectToStruct(JObject json)
         {
-            Logger.WriteTrace($"ConvertJObjectToStruct: Converting object with {json.Count} properties");
+            Logger.WriteTrace(() => $"ConvertJObjectToStruct: Converting object with {json.Count} properties");
 
             var structValue = new Struct();
 
@@ -478,7 +478,7 @@ namespace FormatConverter.Protobuf
         private string FormatOutput(byte[] bytes)
         {
             var format = Config.NumberFormat?.ToLower();
-            Logger.WriteTrace($"FormatOutput: Formatting {bytes.Length} bytes as '{format ?? "base64"}'");
+            Logger.WriteTrace(() => $"FormatOutput: Formatting {bytes.Length} bytes as '{format ?? "base64"}'");
 
             return format switch
             {
@@ -491,7 +491,7 @@ namespace FormatConverter.Protobuf
 
         private string FormatAsRaw(byte[] bytes)
         {
-            Logger.WriteTrace($"FormatAsRaw: Converting {bytes.Length} bytes to string");
+            Logger.WriteTrace(() => $"FormatAsRaw: Converting {bytes.Length} bytes to string");
 
             if (Config.Encoding is UTF8Encoding)
             {
@@ -503,13 +503,13 @@ namespace FormatConverter.Protobuf
 
         private string FormatAsHex(byte[] bytes)
         {
-            Logger.WriteTrace($"FormatAsHex: Formatting {bytes.Length} bytes as hexadecimal");
+            Logger.WriteTrace(() => $"FormatAsHex: Formatting {bytes.Length} bytes as hexadecimal");
 
             const int stackAllocThreshold = 256;
 
             if (bytes.Length <= stackAllocThreshold)
             {
-                Logger.WriteTrace("FormatAsHex: Using stack allocation");
+                Logger.WriteTrace(() => "FormatAsHex: Using stack allocation");
                 Span<char> hexChars = stackalloc char[bytes.Length * 2];
                 for (int i = 0; i < bytes.Length; i++)
                 {
@@ -525,7 +525,7 @@ namespace FormatConverter.Protobuf
             }
             else
             {
-                Logger.WriteTrace("FormatAsHex: Using heap allocation");
+                Logger.WriteTrace(() => "FormatAsHex: Using heap allocation");
                 var hex = Convert.ToHexString(bytes);
 
                 if (Config.PrettyPrint && !Config.Minify)
@@ -572,7 +572,7 @@ namespace FormatConverter.Protobuf
 
         private string FormatAsBinary(byte[] bytes)
         {
-            Logger.WriteTrace($"FormatAsBinary: Formatting {bytes.Length} bytes as binary");
+            Logger.WriteTrace(() => $"FormatAsBinary: Formatting {bytes.Length} bytes as binary");
 
             const int bitsPerByte = 8;
             int totalChars = bytes.Length * bitsPerByte;
@@ -582,7 +582,7 @@ namespace FormatConverter.Protobuf
             {
                 if (Config.PrettyPrint && !Config.Minify)
                 {
-                    Logger.WriteTrace("FormatAsBinary: Using pretty print format");
+                    Logger.WriteTrace(() => "FormatAsBinary: Using pretty print format");
                     int sizeNeeded = totalChars + bytes.Length - 1;
                     buffer = ArrayPool<char>.Shared.Rent(sizeNeeded);
                     Span<char> span = buffer.AsSpan(0, sizeNeeded);
@@ -606,7 +606,7 @@ namespace FormatConverter.Protobuf
                 }
                 else
                 {
-                    Logger.WriteTrace("FormatAsBinary: Using compact format");
+                    Logger.WriteTrace(() => "FormatAsBinary: Using compact format");
                     buffer = ArrayPool<char>.Shared.Rent(totalChars);
                     Span<char> span = buffer.AsSpan(0, totalChars);
 
@@ -628,14 +628,14 @@ namespace FormatConverter.Protobuf
                 if (buffer != null)
                 {
                     ArrayPool<char>.Shared.Return(buffer);
-                    Logger.WriteTrace("FormatAsBinary: Buffer returned to pool");
+                    Logger.WriteTrace(() => "FormatAsBinary: Buffer returned to pool");
                 }
             }
         }
 
         private byte[] CreateErrorOutputBytes(string errorMessage, string errorType, JToken originalToken)
         {
-            Logger.WriteTrace("CreateErrorOutputBytes: Creating error output");
+            Logger.WriteTrace(() => "CreateErrorOutputBytes: Creating error output");
 
             try
             {
@@ -649,7 +649,7 @@ namespace FormatConverter.Protobuf
             }
             catch (Exception ex)
             {
-                Logger.WriteWarning($"CreateErrorOutputBytes: Failed to create Protobuf error, falling back to JSON - {ex.Message}");
+                Logger.WriteWarning(() => $"CreateErrorOutputBytes: Failed to create Protobuf error, falling back to JSON - {ex.Message}");
 
                 var errorObj = new JObject
                 {
@@ -665,7 +665,7 @@ namespace FormatConverter.Protobuf
 
         private string CreateErrorOutput(string errorMessage, string errorType, JToken originalToken)
         {
-            Logger.WriteTrace("CreateErrorOutput: Creating error output");
+            Logger.WriteTrace(() => "CreateErrorOutput: Creating error output");
 
             try
             {
@@ -674,7 +674,7 @@ namespace FormatConverter.Protobuf
             }
             catch (Exception ex)
             {
-                Logger.WriteWarning($"CreateErrorOutput: Failed to format error output, using base64 fallback - {ex.Message}");
+                Logger.WriteWarning(() => $"CreateErrorOutput: Failed to format error output, using base64 fallback - {ex.Message}");
 
                 var errorObj = new JObject
                 {

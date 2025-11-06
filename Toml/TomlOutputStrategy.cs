@@ -14,15 +14,15 @@ namespace FormatConverter.Toml
 
         public override string Serialize(JToken data)
         {
-            Logger.WriteTrace("Serialize: Starting TOML serialization");
+            Logger.WriteTrace(() => "Serialize: Starting TOML serialization");
 
             if (data == null)
             {
-                Logger.WriteError("Serialize: Data is null");
+                Logger.WriteError(() => "Serialize: Data is null");
                 throw new ArgumentNullException(nameof(data));
             }
 
-            Logger.WriteDebug($"Serialize: Input token type: {data.Type}");
+            Logger.WriteDebug(() => $"Serialize: Input token type: {data.Type}");
             var processed = PreprocessToken(data);
 
             try
@@ -33,7 +33,7 @@ namespace FormatConverter.Toml
                 if (processed is JArray arr)
                 {
                     var wrapperKey = Config.TomlArrayWrapperKey ?? DefaultArrayWrapperKey;
-                    Logger.WriteDebug($"Serialize: Wrapping root array under '{wrapperKey}'");
+                    Logger.WriteDebug(() => $"Serialize: Wrapping root array under '{wrapperKey}'");
                     processed = new JObject { [wrapperKey] = arr };
 
                     if (!Config.Minify)
@@ -45,13 +45,13 @@ namespace FormatConverter.Toml
 
                 if (processed is JObject obj)
                 {
-                    Logger.WriteTrace($"Serialize: Processing object with {obj.Count} properties");
+                    Logger.WriteTrace(() => $"Serialize: Processing object with {obj.Count} properties");
                     WriteObject(obj, string.Empty, 0);
                     var result = _output.ToString().TrimEnd();
 
                     if (Config.StrictMode)
                     {
-                        Logger.WriteDebug("Serialize: Validating TOML in strict mode");
+                        Logger.WriteDebug(() => "Serialize: Validating TOML in strict mode");
                         ValidateToml(result);
                     }
 
@@ -60,34 +60,34 @@ namespace FormatConverter.Toml
                 }
                 else
                 {
-                    Logger.WriteError($"Serialize: Invalid root type - {processed.Type}");
+                    Logger.WriteError(() => $"Serialize: Invalid root type - {processed.Type}");
                     throw new FormatException("TOML root must be an object/table");
                 }
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
-                Logger.WriteWarning($"TOML serialization error ignored: {ex.Message}");
+                Logger.WriteWarning(() => $"TOML serialization error ignored: {ex.Message}");
                 return CreateErrorToml(ex.Message, ex.GetType().Name, processed);
             }
         }
 
         public override void SerializeStream(IEnumerable<JToken> data, Stream output, CancellationToken cancellationToken = default)
         {
-            Logger.WriteInfo("SerializeStream: Starting stream serialization");
+            Logger.WriteInfo(() => "SerializeStream: Starting stream serialization");
 
             if (data == null)
             {
-                Logger.WriteError("SerializeStream: Data is null");
+                Logger.WriteError(() => "SerializeStream: Data is null");
                 throw new ArgumentNullException(nameof(data));
             }
             if (output == null)
             {
-                Logger.WriteError("SerializeStream: Output stream is null");
+                Logger.WriteError(() => "SerializeStream: Output stream is null");
                 throw new ArgumentNullException(nameof(output));
             }
 
             var chunkSize = GetChunkSize();
-            Logger.WriteDebug($"SerializeStream: Using chunk size of {chunkSize}");
+            Logger.WriteDebug(() => $"SerializeStream: Using chunk size of {chunkSize}");
 
             using var writer = new StreamWriter(output, Config.Encoding, 8192, leaveOpen: true);
             ConfigureTomlWriter(writer);
@@ -105,7 +105,7 @@ namespace FormatConverter.Toml
 
                 if (buffer.Count >= chunkSize)
                 {
-                    Logger.WriteTrace($"SerializeStream: Writing chunk of {buffer.Count} items");
+                    Logger.WriteTrace(() => $"SerializeStream: Writing chunk of {buffer.Count} items");
                     WriteChunkToStream(buffer, writer, cancellationToken, ref isFirst);
                     totalProcessed += buffer.Count;
                     buffer.Clear();
@@ -115,7 +115,7 @@ namespace FormatConverter.Toml
             if (buffer.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                Logger.WriteTrace($"SerializeStream: Writing final chunk of {buffer.Count} items");
+                Logger.WriteTrace(() => $"SerializeStream: Writing final chunk of {buffer.Count} items");
                 WriteChunkToStream(buffer, writer, cancellationToken, ref isFirst);
                 totalProcessed += buffer.Count;
             }
@@ -126,11 +126,11 @@ namespace FormatConverter.Toml
 
         public void SerializeStream(IEnumerable<JToken> data, string outputPath, CancellationToken cancellationToken = default)
         {
-            Logger.WriteInfo($"SerializeStream: Writing to file '{outputPath}'");
+            Logger.WriteInfo(() => $"SerializeStream: Writing to file '{outputPath}'");
 
             if (string.IsNullOrEmpty(outputPath))
             {
-                Logger.WriteError("SerializeStream: Output path is null or empty");
+                Logger.WriteError(() => "SerializeStream: Output path is null or empty");
                 throw new ArgumentNullException(nameof(outputPath));
             }
 
@@ -144,11 +144,11 @@ namespace FormatConverter.Toml
         {
             if (items.Count == 0)
             {
-                Logger.WriteTrace("WriteChunkToStream: Empty chunk, skipping");
+                Logger.WriteTrace(() => "WriteChunkToStream: Empty chunk, skipping");
                 return;
             }
 
-            Logger.WriteTrace($"WriteChunkToStream: Processing {items.Count} items");
+            Logger.WriteTrace(() => $"WriteChunkToStream: Processing {items.Count} items");
 
             for (int i = 0; i < items.Count; i++)
             {
@@ -172,7 +172,7 @@ namespace FormatConverter.Toml
                     if (item is JArray arr)
                     {
                         var wrapperKey = Config.TomlArrayWrapperKey ?? DefaultArrayWrapperKey;
-                        Logger.WriteTrace($"WriteChunkToStream: Item {i} is array, wrapping under '{wrapperKey}'");
+                        Logger.WriteTrace(() => $"WriteChunkToStream: Item {i} is array, wrapping under '{wrapperKey}'");
                         item = new JObject { [wrapperKey] = arr };
 
                         if (!Config.Minify && i == 0)
@@ -186,30 +186,30 @@ namespace FormatConverter.Toml
                     {
                         WriteObject(obj, string.Empty, 0);
                         writer.WriteLine(_output.ToString().TrimEnd());
-                        Logger.WriteTrace($"WriteChunkToStream: Item {i} written successfully");
+                        Logger.WriteTrace(() => $"WriteChunkToStream: Item {i} written successfully");
                     }
                     else
                     {
-                        Logger.WriteError($"WriteChunkToStream: Item {i} has invalid type - {item.Type}");
+                        Logger.WriteError(() => $"WriteChunkToStream: Item {i} has invalid type - {item.Type}");
                         throw new FormatException($"TOML documents must be objects or arrays (got {item.Type})");
                     }
                 }
                 catch (Exception ex) when (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning($"TOML serialization error in item {i}: {ex.Message}");
+                    Logger.WriteWarning(() => $"TOML serialization error in item {i}: {ex.Message}");
                     var errorToml = CreateErrorToml(ex.Message, ex.GetType().Name, items[i]);
                     writer.WriteLine(errorToml);
                 }
             }
 
             writer.Flush();
-            Logger.WriteDebug($"WriteChunkToStream: Chunk flushed to stream");
+            Logger.WriteDebug(() => $"WriteChunkToStream: Chunk flushed to stream");
         }
 
         private void ConfigureTomlWriter(StreamWriter writer)
         {
             writer.NewLine = Config.Minify ? "\n" : Environment.NewLine;
-            Logger.WriteTrace($"ConfigureTomlWriter: NewLine set to {(Config.Minify ? "\\n" : "Environment.NewLine")}");
+            Logger.WriteTrace(() => $"ConfigureTomlWriter: NewLine set to {(Config.Minify ? "\\n" : "Environment.NewLine")}");
         }
 
         private int GetChunkSize() => Config.ChunkSize > 0 ? Config.ChunkSize : 100;
@@ -218,7 +218,7 @@ namespace FormatConverter.Toml
         {
             if (!Config.StrictMode) return;
 
-            Logger.WriteTrace("ValidateToml: Validating TOML syntax");
+            Logger.WriteTrace(() => "ValidateToml: Validating TOML syntax");
 
             try
             {
@@ -226,14 +226,14 @@ namespace FormatConverter.Toml
                 if (result.HasErrors)
                 {
                     var errors = string.Join(", ", result.Diagnostics.Select(d => d.ToString()));
-                    Logger.WriteError($"ValidateToml: TOML validation failed - {errors}");
+                    Logger.WriteError(() => $"ValidateToml: TOML validation failed - {errors}");
                     throw new FormatException($"Generated TOML is invalid: {errors}");
                 }
-                Logger.WriteDebug("ValidateToml: TOML is valid");
+                Logger.WriteDebug(() => "ValidateToml: TOML is valid");
             }
             catch when (!Config.StrictMode)
             {
-                Logger.WriteWarning("ValidateToml: Validation error ignored (StrictMode is off)");
+                Logger.WriteWarning(() => "ValidateToml: Validation error ignored (StrictMode is off)");
             }
         }
 
@@ -263,7 +263,7 @@ namespace FormatConverter.Toml
 
         private void WriteObject(JObject obj, string sectionPath, int depth)
         {
-            Logger.WriteTrace($"WriteObject: Processing object at path '{sectionPath}' (depth {depth}) with {obj.Count} properties");
+            Logger.WriteTrace(() => $"WriteObject: Processing object at path '{sectionPath}' (depth {depth}) with {obj.Count} properties");
 
             var simpleProperties = new List<JProperty>();
             var complexProperties = new List<JProperty>();
@@ -292,14 +292,14 @@ namespace FormatConverter.Toml
                 {
                     if (Config.IgnoreErrors)
                     {
-                        Logger.WriteWarning($"Skipping property '{prop.Name}' - incompatible with TOML format");
+                        Logger.WriteWarning(() => $"Skipping property '{prop.Name}' - incompatible with TOML format");
                         continue;
                     }
                     throw;
                 }
             }
 
-            Logger.WriteDebug($"WriteObject: Categorized properties - Simple: {simpleProperties.Count}, Complex: {complexProperties.Count}, ArrayOfTables: {arrayOfTablesProperties.Count}");
+            Logger.WriteDebug(() => $"WriteObject: Categorized properties - Simple: {simpleProperties.Count}, Complex: {complexProperties.Count}, ArrayOfTables: {arrayOfTablesProperties.Count}");
 
             foreach (var prop in simpleProperties)
             {
@@ -340,11 +340,11 @@ namespace FormatConverter.Toml
         {
             if (_writtenTables.Contains(sectionPath))
             {
-                Logger.WriteTrace($"WriteTable: Skipping duplicate table '{sectionPath}'");
+                Logger.WriteTrace(() => $"WriteTable: Skipping duplicate table '{sectionPath}'");
                 return;
             }
 
-            Logger.WriteTrace($"WriteTable: Writing table '{sectionPath}'");
+            Logger.WriteTrace(() => $"WriteTable: Writing table '{sectionPath}'");
             _writtenTables.Add(sectionPath);
 
             if (_output.Length > 0 && !_output.ToString().EndsWith("\n\n"))
@@ -358,13 +358,13 @@ namespace FormatConverter.Toml
 
         private void WriteArrayOfTables(string sectionPath, JArray array)
         {
-            Logger.WriteTrace($"WriteArrayOfTables: Writing array of tables '{sectionPath}' with {array.Count} items");
+            Logger.WriteTrace(() => $"WriteArrayOfTables: Writing array of tables '{sectionPath}' with {array.Count} items");
 
             for (int i = 0; i < array.Count; i++)
             {
                 if (array[i] is not JObject item)
                 {
-                    Logger.WriteWarning($"WriteArrayOfTables: Item {i} in '{sectionPath}' is not an object, skipping");
+                    Logger.WriteWarning(() => $"WriteArrayOfTables: Item {i} in '{sectionPath}' is not an object, skipping");
                     continue;
                 }
 
@@ -374,7 +374,7 @@ namespace FormatConverter.Toml
                 }
 
                 _output.AppendLine($"[[{sectionPath}]]");
-                Logger.WriteTrace($"WriteArrayOfTables: Processing item {i} of '{sectionPath}'");
+                Logger.WriteTrace(() => $"WriteArrayOfTables: Processing item {i} of '{sectionPath}'");
 
                 var simpleProperties = new List<JProperty>();
                 var complexProperties = new List<JProperty>();
@@ -403,7 +403,7 @@ namespace FormatConverter.Toml
                     {
                         if (Config.IgnoreErrors)
                         {
-                            Logger.WriteWarning($"Skipping property '{prop.Name}' - incompatible with TOML format");
+                            Logger.WriteWarning(() => $"Skipping property '{prop.Name}' - incompatible with TOML format");
                             continue;
                         }
                         throw;
@@ -444,7 +444,7 @@ namespace FormatConverter.Toml
 
         private void WriteObjectProperties(JObject obj, string sectionPath, int depth)
         {
-            Logger.WriteTrace($"WriteObjectProperties: Processing properties at '{sectionPath}' (depth {depth})");
+            Logger.WriteTrace(() => $"WriteObjectProperties: Processing properties at '{sectionPath}' (depth {depth})");
 
             var simpleProperties = new List<JProperty>();
             var complexProperties = new List<JProperty>();
@@ -473,7 +473,7 @@ namespace FormatConverter.Toml
                 {
                     if (Config.IgnoreErrors)
                     {
-                        Logger.WriteWarning($"Skipping property '{prop.Name}' - incompatible with TOML format");
+                        Logger.WriteWarning(() => $"Skipping property '{prop.Name}' - incompatible with TOML format");
                         continue;
                     }
                     throw;
@@ -513,7 +513,7 @@ namespace FormatConverter.Toml
 
         private void WriteKeyValue(string key, JToken value, int depth)
         {
-            Logger.WriteTrace($"WriteKeyValue: Writing key '{key}' with value type {value.Type}");
+            Logger.WriteTrace(() => $"WriteKeyValue: Writing key '{key}' with value type {value.Type}");
 
             var indent = Config.PrettyPrint ? new string(' ', depth * (Config.IndentSize ?? 2)) : string.Empty;
             var formattedKey = NeedsQuoting(key) ? $"\"{key}\"" : key;
@@ -524,7 +524,7 @@ namespace FormatConverter.Toml
 
         private string? FormatTomlValue(JToken value)
         {
-            Logger.WriteTrace($"FormatTomlValue: Formatting value of type {value.Type}");
+            Logger.WriteTrace(() => $"FormatTomlValue: Formatting value of type {value.Type}");
 
             return value.Type switch
             {
@@ -559,10 +559,10 @@ namespace FormatConverter.Toml
         {
             if (Config.TomlStrictTypes)
             {
-                Logger.WriteError("HandleNullValue: Null value encountered in strict mode");
+                Logger.WriteError(() => "HandleNullValue: Null value encountered in strict mode");
                 throw new FormatException("TOML does not support null values. Disable TomlStrictTypes to convert nulls to empty strings.");
             }
-            Logger.WriteTrace("HandleNullValue: Converting null to empty string");
+            Logger.WriteTrace(() => "HandleNullValue: Converting null to empty string");
             return "\"\"";
         }
 
@@ -572,7 +572,7 @@ namespace FormatConverter.Toml
 
             if (Config.TomlMultilineStrings && (str.Contains('\n') || str.Length > 80))
             {
-                Logger.WriteTrace($"FormatString: Using multiline format for string of length {str.Length}");
+                Logger.WriteTrace(() => $"FormatString: Using multiline format for string of length {str.Length}");
                 return $"\"\"\"\n{str}\n\"\"\"";
             }
 
@@ -583,23 +583,23 @@ namespace FormatConverter.Toml
         {
             if (Config.TomlStrictTypes && (double.IsNaN(number) || double.IsInfinity(number)))
             {
-                Logger.WriteError($"FormatFloat: Special float value {(double.IsNaN(number) ? "NaN" : "Infinity")} in strict mode");
+                Logger.WriteError(() => $"FormatFloat: Special float value {(double.IsNaN(number) ? "NaN" : "Infinity")} in strict mode");
                 throw new FormatException($"TOML does not support {(double.IsNaN(number) ? "NaN" : "Infinity")} values. Disable TomlStrictTypes to convert to string.");
             }
 
             if (double.IsNaN(number))
             {
-                Logger.WriteTrace("FormatFloat: Converting NaN to string");
+                Logger.WriteTrace(() => "FormatFloat: Converting NaN to string");
                 return "\"NaN\"";
             }
             if (double.IsPositiveInfinity(number))
             {
-                Logger.WriteTrace("FormatFloat: Converting Infinity to string");
+                Logger.WriteTrace(() => "FormatFloat: Converting Infinity to string");
                 return "\"Infinity\"";
             }
             if (double.IsNegativeInfinity(number))
             {
-                Logger.WriteTrace("FormatFloat: Converting -Infinity to string");
+                Logger.WriteTrace(() => "FormatFloat: Converting -Infinity to string");
                 return "\"-Infinity\"";
             }
 
@@ -608,7 +608,7 @@ namespace FormatConverter.Toml
 
         private string FormatArray(JArray array)
         {
-            Logger.WriteTrace($"FormatArray: Formatting array with {array.Count} items");
+            Logger.WriteTrace(() => $"FormatArray: Formatting array with {array.Count} items");
 
             if (!array.Any()) return "[]";
 
@@ -626,7 +626,7 @@ namespace FormatConverter.Toml
                 }
             }
 
-            Logger.WriteTrace("FormatArray: Using multiline format for complex array");
+            Logger.WriteTrace(() => "FormatArray: Using multiline format for complex array");
             var indent = new string(' ', (Config.IndentSize ?? 2));
             return "[\n" + indent + string.Join(",\n" + indent, items) + "\n]";
         }
@@ -643,7 +643,7 @@ namespace FormatConverter.Toml
 
         private string FormatInlineTable(JObject obj)
         {
-            Logger.WriteTrace($"FormatInlineTable: Formatting inline table with {obj.Count} properties");
+            Logger.WriteTrace(() => $"FormatInlineTable: Formatting inline table with {obj.Count} properties");
 
             if (!obj.Properties().Any()) return "{}";
 

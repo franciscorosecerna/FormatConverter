@@ -20,20 +20,25 @@
 
         public void Write(VerbosityLevel level, string message)
         {
-            if (!ShouldLog(level))
-                return;
-
             if (LogConfigs.TryGetValue(level, out var config))
             {
                 WriteColored(config.Color, $"{config.Prefix}: ", message, config.UseStdErr);
             }
         }
 
-        public void WriteError(string message) => Write(VerbosityLevel.Error, message);
-        public void WriteWarning(string message) => Write(VerbosityLevel.Warning, message);
-        public void WriteInfo(string message) => Write(VerbosityLevel.Info, message);
-        public void WriteDebug(string message) => Write(VerbosityLevel.Debug, message);
-        public void WriteTrace(string message) => Write(VerbosityLevel.Trace, message);
+        public void Write(VerbosityLevel level, Func<string> message)
+        {
+            if (!ShouldLog(level))
+                return;
+
+            Write(level, message());
+        }
+
+        public void WriteError(Func<string> message) => Write(VerbosityLevel.Error, message);
+        public void WriteWarning(Func<string> message) => Write(VerbosityLevel.Warning, message);
+        public void WriteInfo(Func<string> message) => Write(VerbosityLevel.Info, message);
+        public void WriteDebug(Func<string> message) => Write(VerbosityLevel.Debug, message);
+        public void WriteTrace(Func<string> message) => Write(VerbosityLevel.Trace, message);
 
         public void WriteSuccess(string message) => WriteColored(ConsoleColor.Green, "SUCCESS: ", message);
 

@@ -8,67 +8,67 @@ namespace FormatConverter.Bxml
     {
         public override JToken Parse(string input)
         {
-            Logger.WriteTrace("Parse: Starting BXML parsing");
+            Logger.WriteTrace(() => "Parse: Starting BXML parsing");
 
             if (string.IsNullOrWhiteSpace(input))
             {
-                Logger.WriteWarning("Parse: Input is null or empty");
+                Logger.WriteWarning(() => "Parse: Input is null or empty");
                 return Config.IgnoreErrors
                     ? new JObject()
                     : throw new ArgumentException("BXML input cannot be null or empty", nameof(input));
             }
 
-            Logger.WriteDebug($"Parse: Input length: {input.Length} characters");
+            Logger.WriteDebug(() => $"Parse: Input length: {input.Length} characters");
 
             try
             {
                 var bytes = DecodeInput(input);
-                Logger.WriteDebug($"Parse: Decoded to {bytes.Length} bytes");
+                Logger.WriteDebug(() => $"Parse: Decoded to {bytes.Length} bytes");
 
                 var token = ParseBxmlData(bytes);
-                Logger.WriteTrace($"Parse: Converted to JToken type: {token.Type}");
+                Logger.WriteTrace(() => $"Parse: Converted to JToken type: {token.Type}");
 
                 Logger.WriteSuccess("Parse: BXML parsed successfully");
                 return token;
             }
             catch (Exception ex) when (ex is not FormatException && ex is not ArgumentException)
             {
-                Logger.WriteError($"Parse: Exception occurred - {ex.Message}");
+                Logger.WriteError(() => $"Parse: Exception occurred - {ex.Message}");
                 return HandleParsingError(ex, input);
             }
         }
 
         public override IEnumerable<JToken> ParseStream(string path, CancellationToken cancellationToken = default)
         {
-            Logger.WriteInfo($"ParseStream: Starting stream parsing for '{path}'");
+            Logger.WriteInfo(() => $"ParseStream: Starting stream parsing for '{path}'");
 
             if (string.IsNullOrWhiteSpace(path))
             {
-                Logger.WriteError("ParseStream: Path is null or empty");
+                Logger.WriteError(() => "ParseStream: Path is null or empty");
                 throw new ArgumentException("Path cannot be null or empty.", nameof(path));
             }
 
             if (!File.Exists(path))
             {
-                Logger.WriteError($"ParseStream: File not found at '{path}'");
+                Logger.WriteError(() => $"ParseStream: File not found at '{path}'");
                 throw new FileNotFoundException("Input file not found.", path);
             }
 
-            Logger.WriteDebug($"ParseStream: File found, size: {new FileInfo(path).Length} bytes");
+            Logger.WriteDebug(() => $"ParseStream: File found, size: {new FileInfo(path).Length} bytes");
             return ParseStreamInternal(path, cancellationToken);
         }
 
         private IEnumerable<JToken> ParseStreamInternal(string path, CancellationToken cancellationToken)
         {
-            Logger.WriteTrace("ParseStreamInternal: Opening file stream");
+            Logger.WriteTrace(() => "ParseStreamInternal: Opening file stream");
 
             using var fileStream = File.OpenRead(path);
 
             var fileSize = fileStream.Length;
             var showProgress = fileSize > 10_485_760;
 
-            Logger.WriteDebug($"ParseStreamInternal: File size: {fileSize:N0} bytes, progress logging: {showProgress}");
-            Logger.WriteDebug($"ParseStreamInternal: StrictMode={Config.StrictMode}, MaxDepth={Config.MaxDepth}");
+            Logger.WriteDebug(() => $"ParseStreamInternal: File size: {fileSize:N0} bytes, progress logging: {showProgress}");
+            Logger.WriteDebug(() => $"ParseStreamInternal: StrictMode={Config.StrictMode}, MaxDepth={Config.MaxDepth}");
 
             using var reader = new BxmlStreamReader(
                 fileStream,
@@ -76,31 +76,31 @@ namespace FormatConverter.Bxml
                 maxDepth: Config.MaxDepth!.Value);
 
             if (showProgress)
-                Logger.WriteInfo("Initializing BXML stream reader...");
+                Logger.WriteInfo(() => "Initializing BXML stream reader...");
 
-            Logger.WriteTrace("ParseStreamInternal: Initializing reader");
+            Logger.WriteTrace(() => "ParseStreamInternal: Initializing reader");
             reader.Initialize();
-            Logger.WriteTrace("ParseStreamInternal: Reader initialized");
+            Logger.WriteTrace(() => "ParseStreamInternal: Reader initialized");
 
             if (showProgress)
-                Logger.WriteInfo("Reading BXML document...");
+                Logger.WriteInfo(() => "Reading BXML document...");
 
-            Logger.WriteTrace("ParseStreamInternal: Reading string table");
+            Logger.WriteTrace(() => "ParseStreamInternal: Reading string table");
             string[] stringTable = reader.GetStringTable();
-            Logger.WriteDebug($"ParseStreamInternal: String table loaded with {stringTable.Length} entries");
+            Logger.WriteDebug(() => $"ParseStreamInternal: String table loaded with {stringTable.Length} entries");
 
             BxmlElement? root = null;
             Exception? error = null;
 
             try
             {
-                Logger.WriteTrace("ParseStreamInternal: Reading document");
+                Logger.WriteTrace(() => "ParseStreamInternal: Reading document");
                 root = reader.ReadDocument();
-                Logger.WriteDebug($"ParseStreamInternal: Document read, root element: {(root != null ? "present" : "null")}");
+                Logger.WriteDebug(() => $"ParseStreamInternal: Document read, root element: {(root != null ? "present" : "null")}");
             }
             catch (Exception ex)
             {
-                Logger.WriteWarning($"ParseStreamInternal: Error reading document - {ex.Message}");
+                Logger.WriteWarning(() => $"ParseStreamInternal: Error reading document - {ex.Message}");
                 error = ex;
             }
 
@@ -108,29 +108,29 @@ namespace FormatConverter.Bxml
             {
                 if (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning($"Error reading BXML document: {error.Message}");
+                    Logger.WriteWarning(() => $"Error reading BXML document: {error.Message}");
                     yield return CreateErrorToken(error, $"File: {path}");
                     yield break;
                 }
-                Logger.WriteError($"ParseStreamInternal: Fatal error reading document - {error.Message}");
+                Logger.WriteError(() => $"ParseStreamInternal: Fatal error reading document - {error.Message}");
                 throw new FormatException($"Invalid BXML document: {error.Message}", error);
             }
 
             if (showProgress)
-                Logger.WriteInfo("Converting to JSON...");
+                Logger.WriteInfo(() => "Converting to JSON...");
 
             JToken? json = null;
             error = null;
 
             try
             {
-                Logger.WriteTrace("ParseStreamInternal: Converting BXML to JSON");
+                Logger.WriteTrace(() => "ParseStreamInternal: Converting BXML to JSON");
                 json = ConvertBxmlElementToJson(root!, stringTable);
-                Logger.WriteDebug($"ParseStreamInternal: Converted to JSON type: {json?.Type.ToString() ?? "null"}");
+                Logger.WriteDebug(() => $"ParseStreamInternal: Converted to JSON type: {json?.Type.ToString() ?? "null"}");
             }
             catch (Exception ex)
             {
-                Logger.WriteWarning($"ParseStreamInternal: Error converting to JSON - {ex.Message}");
+                Logger.WriteWarning(() => $"ParseStreamInternal: Error converting to JSON - {ex.Message}");
                 error = ex;
             }
 
@@ -138,11 +138,11 @@ namespace FormatConverter.Bxml
             {
                 if (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning($"Error converting BXML to JSON: {error.Message}");
+                    Logger.WriteWarning(() => $"Error converting BXML to JSON: {error.Message}");
                     yield return CreateErrorToken(error, $"File: {path}");
                     yield break;
                 }
-                Logger.WriteError($"ParseStreamInternal: Fatal error converting to JSON - {error.Message}");
+                Logger.WriteError(() => $"ParseStreamInternal: Fatal error converting to JSON - {error.Message}");
                 throw new FormatException($"Error converting BXML to JSON: {error.Message}", error);
             }
 
@@ -158,11 +158,11 @@ namespace FormatConverter.Bxml
         {
             if (Config.IgnoreErrors)
             {
-                Logger.WriteWarning($"BXML parsing error: {ex.Message}");
+                Logger.WriteWarning(() => $"BXML parsing error: {ex.Message}");
                 return CreateErrorToken(ex, input);
             }
 
-            Logger.WriteError($"HandleParsingError: Fatal error - {ex.Message}");
+            Logger.WriteError(() => $"HandleParsingError: Fatal error - {ex.Message}");
             throw new FormatException($"Invalid BXML: {ex.Message}", ex);
         }
 
@@ -225,11 +225,11 @@ namespace FormatConverter.Bxml
 
         private JToken ParseBxmlData(byte[] bxmlData)
         {
-            Logger.WriteTrace($"ParseBxmlData: Parsing {bxmlData.Length} bytes");
+            Logger.WriteTrace(() => $"ParseBxmlData: Parsing {bxmlData.Length} bytes");
 
             if (bxmlData.Length < 8)
             {
-                Logger.WriteError($"ParseBxmlData: Data too short - {bxmlData.Length} bytes (minimum 8 required)");
+                Logger.WriteError(() => $"ParseBxmlData: Data too short - {bxmlData.Length} bytes (minimum 8 required)");
                 throw new FormatException($"BXML data too short: {bxmlData.Length} bytes (minimum 8 required)");
             }
 
@@ -239,20 +239,20 @@ namespace FormatConverter.Bxml
                 strictMode: Config.StrictMode,
                 maxDepth: Config.MaxDepth ?? 100);
 
-            Logger.WriteTrace("ParseBxmlData: Initializing reader");
+            Logger.WriteTrace(() => "ParseBxmlData: Initializing reader");
             reader.Initialize();
 
-            Logger.WriteTrace("ParseBxmlData: Reading string table");
+            Logger.WriteTrace(() => "ParseBxmlData: Reading string table");
             var stringTable = reader.GetStringTable();
-            Logger.WriteDebug($"ParseBxmlData: String table loaded with {stringTable.Length} entries");
+            Logger.WriteDebug(() => $"ParseBxmlData: String table loaded with {stringTable.Length} entries");
 
-            Logger.WriteTrace("ParseBxmlData: Reading document");
+            Logger.WriteTrace(() => "ParseBxmlData: Reading document");
             var root = reader.ReadDocument();
-            Logger.WriteDebug($"ParseBxmlData: Document read, root has {root.Children.Count} children");
+            Logger.WriteDebug(() => $"ParseBxmlData: Document read, root has {root.Children.Count} children");
 
-            Logger.WriteTrace("ParseBxmlData: Converting to JSON");
+            Logger.WriteTrace(() => "ParseBxmlData: Converting to JSON");
             var result = ConvertBxmlElementToJson(root, stringTable);
-            Logger.WriteTrace($"ParseBxmlData: Converted to {result.Type}");
+            Logger.WriteTrace(() => $"ParseBxmlData: Converted to {result.Type}");
 
             return result;
         }

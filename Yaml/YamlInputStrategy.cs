@@ -13,29 +13,29 @@ namespace FormatConverter.Yaml
         {
             if (string.IsNullOrWhiteSpace(input))
             {
-                Logger.WriteWarning("YAML input is null or empty");
+                Logger.WriteWarning(() => "YAML input is null or empty");
                 return Config.IgnoreErrors
                     ? new JObject()
                     : throw new ArgumentException("YAML input cannot be null or empty");
             }
 
-            Logger.WriteDebug("Starting YAML parsing");
+            Logger.WriteDebug(() => "Starting YAML parsing");
             var deserializer = CreateDeserializer();
 
             try
             {
                 var token = ParseYamlDocument(input, deserializer);
-                Logger.WriteInfo("YAML parsing completed successfully");
+                Logger.WriteInfo(() => "YAML parsing completed successfully");
                 return token;
             }
             catch (YamlException ex)
             {
-                Logger.WriteError($"YAML parsing failed: {ex.Message}");
+                Logger.WriteError(() => $"YAML parsing failed: {ex.Message}");
                 return HandleParsingError(ex, input);
             }
             catch (Exception ex) when (ex is not FormatException)
             {
-                Logger.WriteError($"Unexpected error during YAML parsing: {ex.Message}");
+                Logger.WriteError(() => $"Unexpected error during YAML parsing: {ex.Message}");
                 return HandleParsingError(ex, input);
             }
         }
@@ -44,17 +44,17 @@ namespace FormatConverter.Yaml
         {
             if (string.IsNullOrWhiteSpace(path))
             {
-                Logger.WriteError("Path is null or empty");
+                Logger.WriteError(() => "Path is null or empty");
                 throw new ArgumentException("Path cannot be null or empty.", nameof(path));
             }
 
             if (!File.Exists(path))
             {
-                Logger.WriteError($"Input file not found: {path}");
+                Logger.WriteError(() => $"Input file not found: {path}");
                 throw new FileNotFoundException("Input file not found.", path);
             }
 
-            Logger.WriteInfo($"Starting YAML stream parsing from: {path}");
+            Logger.WriteInfo(() => $"Starting YAML stream parsing from: {path}");
             return ParseStreamInternal(path, cancellationToken);
         }
 
@@ -69,7 +69,7 @@ namespace FormatConverter.Yaml
                 streamReader = new StreamReader(fileStream, Config.Encoding, detectEncodingFromByteOrderMarks: true);
 
                 var fileSize = fileStream.Length;
-                Logger.WriteDebug($"File size: {fileSize} bytes");
+                Logger.WriteDebug(() => $"File size: {fileSize} bytes");
                 var showProgress = fileSize > 10_485_760;
                 var documentsProcessed = 0;
 
@@ -77,7 +77,7 @@ namespace FormatConverter.Yaml
                 var deserializer = CreateDeserializer();
 
                 parser.Consume<StreamStart>();
-                Logger.WriteTrace("YAML stream started");
+                Logger.WriteTrace(() => "YAML stream started");
 
                 while (parser.Accept<DocumentStart>(out _))
                 {
@@ -88,12 +88,12 @@ namespace FormatConverter.Yaml
                     if (token != null)
                     {
                         documentsProcessed++;
-                        Logger.WriteTrace($"Document {documentsProcessed} parsed successfully");
+                        Logger.WriteTrace(() => $"Document {documentsProcessed} parsed successfully");
 
                         if (showProgress && documentsProcessed % 100 == 0)
                         {
                             var progress = (double)fileStream.Position / fileSize * 100;
-                            Logger.WriteInfo($"Processing: {progress:F1}% ({documentsProcessed} documents)");
+                            Logger.WriteInfo(() => $"Processing: {progress:F1}% ({documentsProcessed} documents)");
                         }
 
                         yield return token;
@@ -101,22 +101,22 @@ namespace FormatConverter.Yaml
                 }
 
                 parser.Consume<StreamEnd>();
-                Logger.WriteTrace("YAML stream ended");
+                Logger.WriteTrace(() => "YAML stream ended");
 
                 if (showProgress)
                 {
-                    Logger.WriteInfo($"Completed: {documentsProcessed} documents processed");
+                    Logger.WriteInfo(() => $"Completed: {documentsProcessed} documents processed");
                 }
                 else
                 {
-                    Logger.WriteInfo($"YAML stream parsing completed: {documentsProcessed} documents processed");
+                    Logger.WriteInfo(() => $"YAML stream parsing completed: {documentsProcessed} documents processed");
                 }
             }
             finally
             {
                 streamReader?.Dispose();
                 fileStream?.Dispose();
-                Logger.WriteDebug("Stream resources disposed");
+                Logger.WriteDebug(() => "Stream resources disposed");
             }
         }
 
@@ -129,7 +129,7 @@ namespace FormatConverter.Yaml
                 if (parser.Accept<DocumentEnd>(out _))
                 {
                     parser.Consume<DocumentEnd>();
-                    Logger.WriteTrace("Empty YAML document skipped");
+                    Logger.WriteTrace(() => "Empty YAML document skipped");
                     return null;
                 }
 
@@ -139,7 +139,7 @@ namespace FormatConverter.Yaml
 
                 if (yamlObject == null)
                 {
-                    Logger.WriteTrace("Null YAML document skipped");
+                    Logger.WriteTrace(() => "Null YAML document skipped");
                     return null;
                 }
 
@@ -155,33 +155,33 @@ namespace FormatConverter.Yaml
 
                 if (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning($"YAML error ignored in {errorLocation}: {ex.Message}");
+                    Logger.WriteWarning(() => $"YAML error ignored in {errorLocation}: {ex.Message}");
                     return CreateErrorToken(ex, errorLocation, (int)ex.Start.Line, (int)ex.Start.Column);
                 }
 
-                Logger.WriteError($"Invalid YAML in {errorLocation}: {ex.Message}");
+                Logger.WriteError(() => $"Invalid YAML in {errorLocation}: {ex.Message}");
                 throw new FormatException($"Invalid YAML in {errorLocation}: {ex.Message}", ex);
             }
             catch (Exception ex) when (Config.IgnoreErrors)
             {
-                Logger.WriteWarning($"Unexpected error ignored in {source}: {ex.Message}");
+                Logger.WriteWarning(() => $"Unexpected error ignored in {source}: {ex.Message}");
                 return CreateErrorToken(ex, source, 0, 0);
             }
             catch (Exception ex)
             {
-                Logger.WriteError($"Critical error reading document from {source}: {ex.Message}");
+                Logger.WriteError(() => $"Critical error reading document from {source}: {ex.Message}");
                 throw;
             }
         }
 
         private IParser CreateParser(StreamReader streamReader)
         {
-            Logger.WriteTrace("Creating YAML parser");
+            Logger.WriteTrace(() => "Creating YAML parser");
             var baseParser = new YamlDotNet.Core.Parser(streamReader);
 
             if (Config.MaxDepth.HasValue)
             {
-                Logger.WriteDebug($"Max depth validation enabled: {Config.MaxDepth.Value}");
+                Logger.WriteDebug(() => $"Max depth validation enabled: {Config.MaxDepth.Value}");
                 return new MaxDepthValidatingParser(
                     baseParser,
                     Config.MaxDepth.Value,
@@ -193,20 +193,20 @@ namespace FormatConverter.Yaml
 
         private IDeserializer CreateDeserializer()
         {
-            Logger.WriteTrace("Creating YAML deserializer");
+            Logger.WriteTrace(() => "Creating YAML deserializer");
             var deserializerBuilder = new DeserializerBuilder();
 
             deserializerBuilder.WithAttemptingUnquotedStringTypeDeserialization();
 
             if (Config.NoMetadata)
             {
-                Logger.WriteTrace("Ignoring unmatched properties");
+                Logger.WriteTrace(() => "Ignoring unmatched properties");
                 deserializerBuilder.IgnoreUnmatchedProperties();
             }
 
             if (Config.StrictMode || Config.YamlAllowDuplicateKeys == false)
             {
-                Logger.WriteTrace("Duplicate key checking enabled");
+                Logger.WriteTrace(() => "Duplicate key checking enabled");
                 deserializerBuilder.WithDuplicateKeyChecking();
             }
 
@@ -215,14 +215,14 @@ namespace FormatConverter.Yaml
 
         private JToken ParseYamlDocument(string input, IDeserializer deserializer)
         {
-            Logger.WriteTrace($"Parsing YAML document of length: {input.Length}");
+            Logger.WriteTrace(() => $"Parsing YAML document of length: {input.Length}");
             using var reader = new StringReader(input);
             var parser = new YamlDotNet.Core.Parser(reader);
 
             var yamlObject = deserializer.Deserialize(parser)
                 ?? throw new FormatException("YAML document is empty or null");
 
-            Logger.WriteTrace("YAML document deserialized, converting to JToken");
+            Logger.WriteTrace(() => "YAML document deserialized, converting to JToken");
             return ConvertObjectToJToken(yamlObject);
         }
 
@@ -230,7 +230,7 @@ namespace FormatConverter.Yaml
         {
             if (Config.IgnoreErrors)
             {
-                Logger.WriteWarning($"YAML parsing error ignored: {ex.Message}");
+                Logger.WriteWarning(() => $"YAML parsing error ignored: {ex.Message}");
 
                 var snippet = input.Length > 1000
                     ? string.Concat(input.AsSpan(0, 1000), "...")
@@ -245,7 +245,7 @@ namespace FormatConverter.Yaml
                 };
             }
 
-            Logger.WriteError($"YAML parsing error (not ignored): {ex.Message}");
+            Logger.WriteError(() => $"YAML parsing error (not ignored): {ex.Message}");
             throw new FormatException($"Invalid YAML: {ex.Message}", ex);
         }
 
@@ -274,10 +274,10 @@ namespace FormatConverter.Yaml
             {
                 if (Config.IgnoreErrors)
                 {
-                    Logger.WriteWarning($"Maximum depth {Config.MaxDepth.Value} exceeded at level {currentDepth}");
+                    Logger.WriteWarning(() => $"Maximum depth {Config.MaxDepth.Value} exceeded at level {currentDepth}");
                     return new JValue($"[Max depth exceeded at level {currentDepth}]");
                 }
-                Logger.WriteError($"Maximum depth {Config.MaxDepth.Value} exceeded");
+                Logger.WriteError(() => $"Maximum depth {Config.MaxDepth.Value} exceeded");
                 throw new FormatException($"Maximum depth of {Config.MaxDepth.Value} exceeded");
             }
 
@@ -288,19 +288,19 @@ namespace FormatConverter.Yaml
 
             if (obj is Dictionary<object, object> dict)
             {
-                Logger.WriteTrace($"Converting dictionary with {dict.Count} entries at depth {currentDepth}");
+                Logger.WriteTrace(() => $"Converting dictionary with {dict.Count} entries at depth {currentDepth}");
                 return ConvertDictionaryToJObject(dict, currentDepth);
             }
 
             if (obj is List<object> list)
             {
-                Logger.WriteTrace($"Converting list with {list.Count} items at depth {currentDepth}");
+                Logger.WriteTrace(() => $"Converting list with {list.Count} items at depth {currentDepth}");
                 return ConvertListToJArray(list, currentDepth);
             }
 
             if (obj is Array array)
             {
-                Logger.WriteTrace($"Converting array with {array.Length} items at depth {currentDepth}");
+                Logger.WriteTrace(() => $"Converting array with {array.Length} items at depth {currentDepth}");
                 return ConvertArrayToJArray(array, currentDepth);
             }
 
@@ -347,7 +347,7 @@ namespace FormatConverter.Yaml
 
             if (Config.YamlPreserveLeadingZeros && str.Length > 1 && str[0] == '0' && char.IsDigit(str[1]))
             {
-                Logger.WriteTrace("Preserving leading zeros in string value");
+                Logger.WriteTrace(() => "Preserving leading zeros in string value");
                 return new JValue(str);
             }
 
@@ -393,12 +393,12 @@ namespace FormatConverter.Yaml
                 {
                     if (Config.StrictMode)
                     {
-                        Logger.WriteError("Null key encountered in strict mode");
+                        Logger.WriteError(() => "Null key encountered in strict mode");
                         throw new FormatException("Null keys are not allowed in strict mode");
                     }
 
                     key = nullKeyCounter == 0 ? "null" : $"null_{nullKeyCounter}";
-                    Logger.WriteWarning($"Null key replaced with '{key}'");
+                    Logger.WriteWarning(() => $"Null key replaced with '{key}'");
                     nullKeyCounter++;
                 }
 
